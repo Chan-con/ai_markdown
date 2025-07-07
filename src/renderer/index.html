@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Markdown Editor</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <div class="toolbar">
+            <button id="toggle-sidebar-btn" class="btn">記事管理</button>
+            <button id="new-btn" class="btn">新規</button>
+            <div class="toolbar-separator"></div>
+            <button id="ai-image-btn" class="btn ai-btn">🎨 AI画像生成</button>
+            <button id="open-image-folder-toolbar" class="btn">📁 画像フォルダ</button>
+            <div class="toolbar-separator"></div>
+            <button id="settings-btn" class="btn">設定</button>
+            <div class="window-controls">
+                <button id="close-btn" class="window-control-btn">×</button>
+            </div>
+        </div>
+        
+        <div class="main-content">
+            <div class="sidebar" id="sidebar">
+                <div class="sidebar-header">
+                    <h3>記事管理</h3>
+                    <div class="search-container">
+                        <input type="text" id="search-input" placeholder="記事を検索...">
+                        <button id="search-btn" class="btn-small">検索</button>
+                    </div>
+                </div>
+                <div class="article-list" id="article-list">
+                    <div class="no-articles">記事が見つかりません</div>
+                </div>
+            </div>
+            
+            <div class="editor-container">
+                <div class="editor-tabs">
+                    <button class="tab-toggle-btn" id="tab-toggle-btn" title="プレビューに切り替え (Ctrl+2)">
+                        📝
+                    </button>
+                    
+                    <div class="tab-controls">
+                        <div class="edit-history-controls">
+                            <button id="undo-btn" class="tab-toggle-btn" disabled title="元に戻す (Ctrl+Z)">↶</button>
+                            <button id="redo-btn" class="tab-toggle-btn" disabled title="やり直し (Ctrl+Y)">↷</button>
+                        </div>
+                    </div>
+                    
+                    <div class="tab-info">
+                        <div class="auto-title-info">
+                            <span class="title-display">自動タイトル: <span id="current-title">記事</span></span>
+                        </div>
+                        <div class="save-status">
+                            <span id="save-indicator" class="save-indicator">保存済み</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="tab-content-container">
+                    <div class="tab-content active" id="editor-content">
+                        <textarea id="editor" placeholder="ここにMarkdownを入力してください..."></textarea>
+                    </div>
+                    <div class="tab-content" id="preview-content">
+                        <div id="preview"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="ai-assistant-panel">
+                <div class="panel-header">
+                    <h3>🤖 AIアシスタント</h3>
+                    <div class="ai-panel-controls">
+                        <button id="toggle-ai-panel" class="btn-small">縮小</button>
+                    </div>
+                </div>
+                <div class="ai-assistant-content">
+                    <div class="conversation-history" id="conversation-history">
+                        <div class="welcome-message">
+                            <p>👋 こんにちは！文書の作成・編集をお手伝いします。</p>
+                            <p>テキストを選択してから指示するか、全体的な編集指示をお気軽にどうぞ。</p>
+                        </div>
+                    </div>
+                    
+                    
+                    <div class="ai-input-area">
+                        <div class="selected-text-info" id="selected-text-info" style="display: none;">
+                            <span class="selection-label">選択中:</span>
+                            <span class="selection-preview" id="selection-preview"></span>
+                        </div>
+                        <div class="ai-input-container">
+                            <textarea id="ai-instruction" placeholder="AIに指示を入力してください... (例: この部分をもっと詳しく説明して、文体を丁寧語に変更して)"></textarea>
+                            <div class="ai-input-actions">
+                                <button id="send-ai-instruction" class="btn ai-btn">送信</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI Content Modal -->
+    <div id="ai-content-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>AI文章生成</h3>
+                <span class="close" id="ai-content-close">&times;</span>
+            </div>
+            <div class="modal-body">
+                <label for="content-prompt">生成したい内容を説明してください:</label>
+                <textarea id="content-prompt" placeholder="例: 旅行の記事のセクション、料理のレシピ、技術記事の概要など"></textarea>
+                <button id="generate-content-btn" class="btn ai-btn">文章を生成</button>
+                <div id="generated-content" class="generated-result"></div>
+                <button id="insert-content-btn" class="btn" style="display: none;">エディタに挿入</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI Edit Modal -->
+    <div id="ai-edit-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>AI編集</h3>
+                <span class="close" id="ai-edit-close">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="current-content-preview">
+                    <label>現在の本文（最初の200文字）:</label>
+                    <div id="current-content-preview" class="content-preview"></div>
+                </div>
+                <label for="edit-instruction">編集指示を入力してください:</label>
+                <textarea id="edit-instruction" placeholder="例: # 代１と # 代２を内容ごと入れ替えて、文章をより読みやすく調整して、誤字脱字を修正して"></textarea>
+                <div class="edit-options">
+                    <label>
+                        <input type="checkbox" id="show-changes" checked> 変更箇所をハイライト表示
+                    </label>
+                </div>
+                <button id="execute-edit-btn" class="btn ai-btn">編集を実行</button>
+                <div id="edit-result" class="generated-result"></div>
+                <div class="edit-actions" style="display: none;">
+                    <button id="apply-edit-btn" class="btn ai-btn">編集を適用</button>
+                    <button id="cancel-edit-btn" class="btn">キャンセル</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI Image Modal -->
+    <div id="ai-image-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>AI画像生成</h3>
+                <span class="close" id="ai-image-close">&times;</span>
+            </div>
+            <div class="modal-body">
+                <label for="image-prompt">生成したい画像を説明してください:</label>
+                <textarea id="image-prompt" placeholder="例: 美しい夕日の風景、モダンなオフィス、かわいい猫など"></textarea>
+                <button id="generate-image-btn" class="btn ai-btn">画像を生成</button>
+                <div id="generated-image" class="generated-result"></div>
+                <div class="image-actions" style="display: none;">
+                    <button id="save-image-btn" class="btn ai-btn">画像を保存</button>
+                    <button id="open-image-folder-btn" class="btn">画像フォルダを開く</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>設定</h3>
+                <span class="close" id="settings-close">&times;</span>
+            </div>
+            <div class="modal-body">
+                <label for="openai-api-key">OpenAI APIキー:</label>
+                <input type="password" id="openai-api-key" placeholder="sk-...">
+                
+                <label for="default-directory">デフォルト保存ディレクトリ:</label>
+                <div class="directory-input">
+                    <input type="text" id="default-directory" placeholder="ディレクトリを選択..." readonly>
+                    <button id="select-directory-btn" class="btn">選択</button>
+                </div>
+                
+                <label for="image-directory">AI画像保存ディレクトリ:</label>
+                <div class="directory-input">
+                    <input type="text" id="image-directory" placeholder="ディレクトリを選択..." readonly>
+                    <button id="select-image-directory-btn" class="btn">選択</button>
+                </div>
+                
+                <button id="save-settings-btn" class="btn">設定を保存</button>
+                <p class="note">APIキーは安全に保存され、OpenAIとの通信にのみ使用されます。</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Modal -->
+    <div id="loading-modal" class="modal loading-modal">
+        <div class="loading-content">
+            <div class="spinner"></div>
+            <p id="loading-message">保存中...</p>
+        </div>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>
