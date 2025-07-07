@@ -9,7 +9,9 @@
     "build": "electron-builder",
     "package:win": "electron-builder --win",
     "package:mac": "electron-builder --mac",
-    "package:linux": "electron-builder --linux"
+    "package:linux": "electron-builder --linux",
+    "create-ico": "node scripts/create-ico.js",
+    "icon-help": "powershell -ExecutionPolicy Bypass -File scripts/create-square-icon.ps1"
   },
   "keywords": ["electron", "markdown", "editor", "ai", "openai"],
   "author": "Your Name",
@@ -27,19 +29,63 @@
     "appId": "com.yourcompany.ai-markdown-editor",
     "productName": "AI Markdown Editor",
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "assets"
     },
     "files": [
       "src/**/*",
-      "node_modules/**/*"
+      "assets/icon.png",
+      "node_modules/**/*",
+      "package.json"
     ],
+    "asarUnpack": [
+      "**\\*.node"
+    ],
+    "extraResources": [
+      {
+        "from": "assets/",
+        "to": "assets/",
+        "filter": ["**/*"]
+      }
+    ],
+    "compression": "normal",
+    "extraMetadata": {
+      "devTools": true
+    },
     "win": {
-      "target": "nsis",
-      "icon": "assets/icon.ico"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "./assets/app-icon.png",
+      "requestedExecutionLevel": "asInvoker",
+      "publisherName": "AI Markdown Editor"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AI Markdown Editor",
+      "perMachine": false,
+      "allowElevation": true,
+      "artifactName": "${productName} Setup ${version}.${ext}",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
     },
     "mac": {
       "target": "dmg",
-      "icon": "assets/icon.icns"
+      "icon": "assets/icon.png"
     },
     "linux": {
       "target": "AppImage",
