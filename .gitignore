@@ -175,3 +175,6 @@ generated-images/
 # Backup files
 *.backup
 *.bak
+
+# claude
+.claude
