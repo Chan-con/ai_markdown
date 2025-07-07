@@ -87,6 +87,9 @@ class MarkdownEditor {
         // Window control button
         this.closeBtn = document.getElementById('close-btn');
         
+        // Copy markdown button
+        this.copyMarkdownBtn = document.getElementById('copy-markdown-btn');
+        
         // AI Assistant Panel elements
         this.aiAssistantPanel = document.querySelector('.ai-assistant-panel');
         this.conversationHistory = document.getElementById('conversation-history');
@@ -227,6 +230,11 @@ class MarkdownEditor {
             });
         }
         
+        // Copy markdown event
+        if (this.copyMarkdownBtn) {
+            this.copyMarkdownBtn.addEventListener('click', () => this.copyMarkdownToClipboard());
+        }
+        
         // Edit history events
         if (this.undoBtn) {
             this.undoBtn.addEventListener('click', () => this.undo());
@@ -250,6 +258,9 @@ class MarkdownEditor {
                 } else if ((e.key === 'z' && e.shiftKey) || e.key === 'y') {
                     e.preventDefault();
                     this.redo();
+                } else if (e.key === 'C' && e.shiftKey) {
+                    e.preventDefault();
+                    this.copyMarkdownToClipboard();
                 }
             }
         });
@@ -1232,6 +1243,89 @@ ${instruction}`;
         
         this.currentActiveTab = tabName;
         console.log('Tab switched to:', tabName);
+    }
+    
+    // === クリップボードコピー機能 ===
+    
+    async copyMarkdownToClipboard() {
+        try {
+            const markdownContent = this.editor.value;
+            
+            if (!markdownContent.trim()) {
+                this.showNotification('コピーするコンテンツがありません', 'warning');
+                return;
+            }
+            
+            // クリップボードにコピー
+            await navigator.clipboard.writeText(markdownContent);
+            
+            // 成功の視覚的フィードバック
+            this.showCopySuccess();
+            
+            console.log('Markdown copied to clipboard');
+        } catch (error) {
+            console.error('Failed to copy to clipboard:', error);
+            
+            // フォールバック: 従来の方法でコピー
+            try {
+                const textArea = document.createElement('textarea');
+                textArea.value = this.editor.value;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                
+                this.showCopySuccess();
+            } catch (fallbackError) {
+                console.error('Fallback copy also failed:', fallbackError);
+                this.showNotification('クリップボードへのコピーに失敗しました', 'error');
+            }
+        }
+    }
+    
+    showCopySuccess() {
+        // ボタンの一時的な視覚的フィードバック
+        if (this.copyMarkdownBtn) {
+            const originalText = this.copyMarkdownBtn.textContent;
+            const originalTitle = this.copyMarkdownBtn.title;
+            
+            this.copyMarkdownBtn.textContent = '✓';
+            this.copyMarkdownBtn.title = 'コピー完了！';
+            this.copyMarkdownBtn.style.background = '#4CAF50';
+            this.copyMarkdownBtn.style.color = 'white';
+            
+            setTimeout(() => {
+                this.copyMarkdownBtn.textContent = originalText;
+                this.copyMarkdownBtn.title = originalTitle;
+                this.copyMarkdownBtn.style.background = '';
+                this.copyMarkdownBtn.style.color = '';
+            }, 1000);
+        }
+        
+        this.showNotification('マークダウンをクリップボードにコピーしました', 'success');
+    }
+    
+    showNotification(message, type = 'info') {
+        // 既存の通知があれば削除
+        const existingNotification = document.querySelector('.copy-notification');
+        if (existingNotification) {
+            existingNotification.remove();
+        }
+        
+        // 通知要素を作成
+        const notification = document.createElement('div');
+        notification.className = `copy-notification ${type}`;
+        notification.textContent = message;
+        
+        // ページに追加
+        document.body.appendChild(notification);
+        
+        // 自動で削除
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.remove();
+            }
+        }, 3000);
     }
     
     // === 履歴管理とUndo/Redo機能 ===
