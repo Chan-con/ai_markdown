@@ -97,6 +97,7 @@ class MarkdownEditor {
         this.sendAiInstructionBtn = document.getElementById('send-ai-instruction');
         this.selectedTextInfo = document.getElementById('selected-text-info');
         this.selectionPreview = document.getElementById('selection-preview');
+        this.webSearchIndicator = document.getElementById('web-search-indicator');
         
         // Edit history elements (moved to editor tab area)
         this.undoBtn = document.getElementById('undo-btn');
@@ -957,17 +958,29 @@ ${this.originalContent}`;
         try {
             this.isAiProcessing = true;
             
+            // Web検索が必要かチェック
+            const needsWebSearch = this.needsWebSearch(instruction);
+            
             // ユーザーメッセージを履歴に追加
             this.addConversationMessage('user', instruction);
             
             // 指示を処理中表示
             this.showProcessingIndicator();
             
+            // Web検索インジケーターを表示
+            if (needsWebSearch) {
+                this.showWebSearchIndicator();
+            }
+            
             // AI指示を実行
             const result = await this.processAIInstruction(instruction);
             
-            // AI回答を履歴に追加
-            this.addConversationMessage('ai', result.response);
+            // AI回答を履歴に追加（Web検索使用の場合はマーク付き）
+            let responseMessage = result.response;
+            if (needsWebSearch) {
+                responseMessage = `🔍 ${responseMessage}`;
+            }
+            this.addConversationMessage('ai', responseMessage);
             
             // 編集結果があれば直接適用（Undoで元に戻せるので安全）
             if (result.editedContent) {
@@ -983,6 +996,7 @@ ${this.originalContent}`;
         } finally {
             this.isAiProcessing = false;
             this.hideProcessingIndicator();
+            this.hideWebSearchIndicator();
         }
     }
     
@@ -999,13 +1013,20 @@ ${this.originalContent}`;
             contentLength: targetContent.length
         });
         
+        // Web検索が必要かどうかを判定
+        const needsWebSearch = this.needsWebSearch(instruction);
+        
+        // 追記指示かどうかを判定
+        const isAppendInstruction = this.isAppendInstruction(instruction);
+        
         // プロンプトを構築（デフォルトで非破壊的編集）
-        const systemPrompt = `あなたは高度な文書編集アシスタントです。ユーザーからの指示に従って、与えられたテキストを編集または分析してください。
+        let systemPrompt = `あなたは高度な文書編集アシスタントです。ユーザーからの指示に従って、与えられたテキストを編集または分析してください。
 
 指示のタイプに応じて適切に処理してください：
 1. 編集指示の場合：編集結果のみを返す
 2. 質問や分析の場合：回答を返す
 3. 生成指示の場合：新しいコンテンツを生成
+4. 最新情報が必要な場合：Web検索を使用して最新情報を取得し、回答に反映する
 
 🛡️ 編集時の重要な原則（必ず守ってください）：
 - 既存の内容を削除せず、追記・改善・拡張を優先してください
@@ -1013,7 +1034,31 @@ ${this.originalContent}`;
 - 元の構造や意味を保持し、マークダウン形式を維持してください
 - 文章の改善は既存部分を改良し、必要に応じて新しい内容を追加してください
 - 大幅な変更が必要な場合は、元の内容を残しつつ改善版を追加してください
-- 編集の場合は結果のみ、質問の場合は回答のみを返してください`;
+- 編集の場合は結果のみ、質問の場合は回答のみを返してください
+- Web検索を使用した場合は、情報源を明記してください
+
+⚠️ 出力形式の重要な注意事項：
+- 【対象テキスト】【指示】【重要】などの内部フォーマット指示は絶対に出力に含めないでください
+- プロンプトの構造や指示の枠組みは表示せず、純粋なコンテンツのみを返してください
+- ユーザーに見せる必要のない技術的な指示や分類は一切出力しないでください
+
+📝 記事フォーマット規則（必須）：
+- 1行目は必ず「# タイトル」で開始してください
+- 内容は「## サブタイトル」でセクション分けしてください  
+- 既存のH1タイトル（# タイトル）は絶対に変更・削除しないでください
+- 既存のH2構造（## サブタイトル）も維持してください
+- 追記時は適切なH2セクションに追加するか、新しいH2セクションを作成してください
+- 新規作成時もこのフォーマットに従ってください`;
+
+        if (isAppendInstruction) {
+            systemPrompt += `
+
+📝 追記専用モード：
+- 既存の内容は一切変更せず、そのまま保持してください
+- 既存コンテンツの最後に新しい内容を追加してください
+- 必ず既存の内容 + 新しい内容の形で返してください
+- 既存コンテンツを要約したり削除したりしないでください`;
+        }
 
         const selectionInfo = isSelection ? `
 【対象テキスト】（選択範囲）
@@ -1021,27 +1066,57 @@ ${targetContent}` : `
 【対象テキスト】（全体）
 ${targetContent}`;
 
-        const userPrompt = `${selectionInfo}
+        let userPrompt = `${selectionInfo}
 
 【指示】
 ${instruction}`;
 
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${this.apiKey}`
-            },
-            body: JSON.stringify({
-                model: 'gpt-4.1',
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: userPrompt }
-                ],
-                max_tokens: 4000,
-                temperature: 0.3
-            })
-        });
+        if (isAppendInstruction) {
+            userPrompt += `
+
+【重要】これは追記指示です。既存のコンテンツを削除・変更せず、そのまま保持して最後に新しい内容を追加してください。返答は「既存コンテンツ + 改行 + 新しい内容」の形式にしてください。`;
+        }
+
+        let response;
+        
+        if (needsWebSearch) {
+            // Responses API with web search
+            response = await fetch('https://api.openai.com/v1/responses', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.apiKey}`
+                },
+                body: JSON.stringify({
+                    model: 'gpt-4o',
+                    input: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: userPrompt }
+                    ],
+                    tools: [{
+                        type: 'web_search'
+                    }]
+                })
+            });
+        } else {
+            // Traditional chat completions API
+            response = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.apiKey}`
+                },
+                body: JSON.stringify({
+                    model: 'gpt-4o',
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: userPrompt }
+                    ],
+                    max_tokens: 4000,
+                    temperature: 0.3
+                })
+            });
+        }
         
         if (!response.ok) {
             const errorData = await response.json();
@@ -1049,16 +1124,115 @@ ${instruction}`;
         }
         
         const data = await response.json();
-        const aiResponse = data.choices[0].message.content.trim();
+        let aiResponse;
+        
+        if (needsWebSearch) {
+            // Responses API format - extract content from output array
+            console.log('Responses API data:', data);
+            
+            if (data.output && Array.isArray(data.output)) {
+                // Find the message object in the output array
+                const messageOutput = data.output.find(item => item.type === 'message');
+                if (messageOutput && messageOutput.content && Array.isArray(messageOutput.content)) {
+                    // Extract text from content array
+                    const textContent = messageOutput.content.find(item => item.type === 'output_text');
+                    if (textContent && textContent.text) {
+                        aiResponse = textContent.text;
+                    }
+                }
+            }
+            
+            // Fallback checks
+            if (!aiResponse) {
+                if (data.message?.content) {
+                    aiResponse = data.message.content;
+                } else if (data.response) {
+                    aiResponse = data.response;
+                } else if (data.choices && data.choices[0]?.message?.content) {
+                    aiResponse = data.choices[0].message.content;
+                } else if (data.content) {
+                    aiResponse = data.content;
+                } else if (typeof data === 'string') {
+                    aiResponse = data;
+                } else {
+                    // Fallback: try to extract content from any available field
+                    aiResponse = JSON.stringify(data, null, 2);
+                    console.log('Unexpected Responses API format:', data);
+                }
+            }
+            
+            // Ensure we have a string response
+            if (typeof aiResponse !== 'string') {
+                aiResponse = String(aiResponse);
+            }
+        } else {
+            // Chat completions format
+            aiResponse = data.choices[0].message.content.trim();
+        }
+        
+        // 内部指示の漏れを除去
+        aiResponse = this.cleanInternalInstructions(aiResponse);
         
         // 編集結果かどうかを判定
-        const isEditResponse = this.isEditInstruction(instruction);
+        const isEditResponse = this.isEditInstruction(instruction) || isAppendInstruction;
         
         return {
             response: aiResponse,
             editedContent: isEditResponse ? aiResponse : null,
             editType: isSelection ? 'selection' : 'full'
         };
+    }
+    
+    needsWebSearch(instruction) {
+        const webSearchKeywords = [
+            '最新', '最新情報', '最新の', '今日', '今週', '今月', '今年', '現在',
+            'ニュース', '最近', '近況', '最新動向', '最新状況', '今の状況',
+            '検索', '調べて', '調査', '情報', '詳細', '詳しく',
+            '最新版', '最新技術', '最新研究', '最新発表', '最新リリース',
+            '今何時', '天気', '株価', '為替', '価格', '相場'
+        ];
+        
+        return webSearchKeywords.some(keyword => 
+            instruction.toLowerCase().includes(keyword.toLowerCase())
+        );
+    }
+    
+    isAppendInstruction(instruction) {
+        const appendKeywords = [
+            '追記', '追加', '付け足し', '付け加え', '末尾に', '最後に',
+            'まとめて追記', '軽くまとめて追記', 'まとめを追加', '要約を追加',
+            '補足', '加筆', '追補', '後に追加', '文末に', '終わりに'
+        ];
+        
+        return appendKeywords.some(keyword => 
+            instruction.toLowerCase().includes(keyword.toLowerCase())
+        );
+    }
+    
+    cleanInternalInstructions(text) {
+        // 内部指示文を除去
+        const internalPatterns = [
+            /【対象テキスト】[^】]*】?/g,
+            /【指示】[^】]*】?/g,
+            /【重要】[^】]*】?/g,
+            /【対象テキスト】（[^）]*）[^\n]*/g,
+            /【指示】\s*\n?/g,
+            /【重要】[^】\n]*\n?/g,
+            /^【.*】.*\n?/gm  // 行頭の【】形式を除去
+        ];
+        
+        let cleanedText = text;
+        internalPatterns.forEach(pattern => {
+            cleanedText = cleanedText.replace(pattern, '');
+        });
+        
+        // 連続する空行を整理
+        cleanedText = cleanedText.replace(/\n\s*\n\s*\n/g, '\n\n');
+        
+        // 先頭と末尾の空行を除去
+        cleanedText = cleanedText.trim();
+        
+        return cleanedText;
     }
     
     isEditInstruction(instruction) {
@@ -1173,6 +1347,20 @@ ${instruction}`;
         const indicator = document.getElementById('ai-processing-indicator');
         if (indicator) {
             indicator.remove();
+        }
+    }
+    
+    showWebSearchIndicator() {
+        const indicator = document.getElementById('web-search-indicator');
+        if (indicator) {
+            indicator.style.display = 'flex';
+        }
+    }
+    
+    hideWebSearchIndicator() {
+        const indicator = document.getElementById('web-search-indicator');
+        if (indicator) {
+            indicator.style.display = 'none';
         }
     }
     

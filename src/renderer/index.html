@@ -74,12 +74,17 @@
             <div class="ai-assistant-panel">
                 <div class="panel-header">
                     <h3>🤖 AIアシスタント</h3>
+                    <div class="web-search-indicator" id="web-search-indicator" style="display: none;">
+                        <span class="indicator-icon">🔍</span>
+                        <span class="indicator-text">Web検索中...</span>
+                    </div>
                 </div>
                 <div class="ai-assistant-content">
                     <div class="conversation-history" id="conversation-history">
                         <div class="welcome-message">
                             <p>👋 こんにちは！文書の作成・編集をお手伝いします。</p>
                             <p>テキストを選択してから指示するか、全体的な編集指示をお気軽にどうぞ。</p>
+                            <p>💡 最新情報が必要な場合は、「最新の」「最新情報」「調べて」などのキーワードを含めるとWeb検索を活用します。</p>
                         </div>
                     </div>
                     
@@ -90,7 +95,7 @@
                             <span class="selection-preview" id="selection-preview"></span>
                         </div>
                         <div class="ai-input-container">
-                            <textarea id="ai-instruction" placeholder="AIに指示を入力してください... (例: この部分をもっと詳しく説明して、文体を丁寧語に変更して)"></textarea>
+                            <textarea id="ai-instruction" placeholder="AIに指示を入力してください... (例: この部分をもっと詳しく説明して、最新の情報を調べて追加して)"></textarea>
                             <div class="ai-input-actions">
                                 <button id="send-ai-instruction" class="btn ai-btn">送信</button>
                             </div>
