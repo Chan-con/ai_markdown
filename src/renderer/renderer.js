@@ -97,7 +97,6 @@ class MarkdownEditor {
         this.sendAiInstructionBtn = document.getElementById('send-ai-instruction');
         this.selectedTextInfo = document.getElementById('selected-text-info');
         this.selectionPreview = document.getElementById('selection-preview');
-        this.toggleAiPanelBtn = document.getElementById('toggle-ai-panel');
         
         // Edit history elements (moved to editor tab area)
         this.undoBtn = document.getElementById('undo-btn');
@@ -139,7 +138,6 @@ class MarkdownEditor {
         // 統合AIアシスタント用
         this.conversationMessages = [];
         this.currentSelection = null;
-        this.aiPanelCollapsed = false;
         this.isAiProcessing = false;
         
         // 編集履歴管理用
@@ -208,9 +206,6 @@ class MarkdownEditor {
             });
         }
         
-        if (this.toggleAiPanelBtn) {
-            this.toggleAiPanelBtn.addEventListener('click', () => this.toggleAIPanel());
-        }
         
         
         // Tab toggle event
@@ -1114,20 +1109,6 @@ ${instruction}`;
         this.showSuccessMessage('AI編集を適用しました');
     }
     
-    
-    toggleAIPanel() {
-        this.aiPanelCollapsed = !this.aiPanelCollapsed;
-        
-        if (this.aiAssistantPanel) {
-            if (this.aiPanelCollapsed) {
-                this.aiAssistantPanel.classList.add('collapsed');
-                this.toggleAiPanelBtn.textContent = '展開';
-            } else {
-                this.aiAssistantPanel.classList.remove('collapsed');
-                this.toggleAiPanelBtn.textContent = '縮小';
-            }
-        }
-    }
     
     addConversationMessage(type, content) {
         const timestamp = new Date().toLocaleTimeString('ja-JP', {
