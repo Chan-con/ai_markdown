@@ -33,7 +33,7 @@
   },
   "build": {
     "appId": "com.yourcompany.ai-markdown-editor",
-    "productName": "AI Markdown Editor",
+    "productName": "AIMarkdownEditor",
     "directories": {
       "output": "dist",
       "buildResources": "assets"
@@ -83,14 +83,14 @@
       ],
       "icon": "./assets/app-icon.png",
       "requestedExecutionLevel": "asInvoker",
-      "publisherName": "AI Markdown Editor"
+      "publisherName": "AIMarkdownEditor"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "AI Markdown Editor",
+      "shortcutName": "AIMarkdownEditor",
       "perMachine": false,
       "allowElevation": true,
       "artifactName": "${productName} Setup ${version}.${ext}",
