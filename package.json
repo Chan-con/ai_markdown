@@ -13,17 +13,23 @@
     "create-ico": "node scripts/create-ico.js",
     "icon-help": "powershell -ExecutionPolicy Bypass -File scripts/create-square-icon.ps1"
   },
-  "keywords": ["electron", "markdown", "editor", "ai", "openai"],
+  "keywords": [
+    "electron",
+    "markdown",
+    "editor",
+    "ai",
+    "openai"
+  ],
   "author": "Your Name",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^27.0.0",
+    "electron": "^37.2.0",
     "electron-builder": "^24.0.0"
   },
   "dependencies": {
+    "electron-store": "^8.1.0",
     "marked": "^9.1.0",
-    "openai": "^4.0.0",
-    "electron-store": "^8.1.0"
+    "openai": "^4.0.0"
   },
   "build": {
     "appId": "com.yourcompany.ai-markdown-editor",
@@ -45,7 +51,9 @@
       {
         "from": "assets/",
         "to": "assets/",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "compression": "normal",
@@ -56,15 +64,21 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "zip",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "./assets/app-icon.png",
