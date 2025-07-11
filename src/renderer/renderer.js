@@ -52,9 +52,8 @@ class MarkdownEditor {
             'preview': 'preview',
             'currentTitleSpan': 'current-title',
             'saveIndicator': 'save-indicator',
-            'newBtn': 'new-btn',
+            'newArticleBtn': 'new-article-btn',
             'toggleSidebarBtn': 'toggle-sidebar-btn',
-            'sidebar': 'sidebar',
             'searchInput': 'search-input',
             'searchBtn': 'search-btn',
             'articleList': 'article-list',
@@ -92,12 +91,26 @@ class MarkdownEditor {
         
         // AI Assistant Panel elements
         this.aiAssistantPanel = document.querySelector('.ai-assistant-panel');
+        this.resizeHandle = document.querySelector('.resize-handle');
         this.conversationHistory = document.getElementById('conversation-history');
         this.aiInstruction = document.getElementById('ai-instruction');
         this.sendAiInstructionBtn = document.getElementById('send-ai-instruction');
         this.selectedTextInfo = document.getElementById('selected-text-info');
         this.selectionPreview = document.getElementById('selection-preview');
+        this.selectionClearBtn = document.getElementById('selection-clear-btn');
         this.webSearchIndicator = document.getElementById('web-search-indicator');
+        
+        // Slide menu elements
+        this.slideMenu = document.getElementById('slide-menu');
+        this.overlay = document.getElementById('overlay');
+        this.closeMenuBtn = document.getElementById('close-menu-btn');
+        this.newArticleLoading = document.getElementById('new-article-loading');
+        
+        console.log('Slide menu elements initialized:');
+        console.log('slideMenu:', this.slideMenu);
+        console.log('overlay:', this.overlay);
+        console.log('closeMenuBtn:', this.closeMenuBtn);
+        console.log('newArticleLoading:', this.newArticleLoading);
         
         // Edit history elements (moved to editor tab area)
         this.undoBtn = document.getElementById('undo-btn');
@@ -141,27 +154,43 @@ class MarkdownEditor {
         this.currentSelection = null;
         this.isAiProcessing = false;
         
+        // Delete confirmation modal elements
+        this.deleteConfirmationModal = document.getElementById('delete-confirmation-modal');
+        this.deleteModalClose = document.getElementById('delete-modal-close');
+        this.deleteArticleTitle = document.getElementById('delete-article-title');
+        this.deleteArticlePath = document.getElementById('delete-article-path');
+        this.deleteCancelBtn = document.getElementById('delete-cancel-btn');
+        this.deleteConfirmBtn = document.getElementById('delete-confirm-btn');
+        this.currentDeletePath = null;
+        
+        // Debug: Check if close menu button exists
+        console.log('Close menu button found:', this.closeMenuBtn);
+        console.log('Close menu button element:', document.getElementById('close-menu-btn'));
+        
         // 編集履歴管理用
         this.editHistory = [];
         this.currentHistoryIndex = -1;
         this.maxHistorySize = 50;
         
+        // 外部リンクを外部ブラウザで開く設定
+        this.setupExternalLinks();
+        
         console.log('All elements initialized successfully');
     }
 
     setupEventListeners() {
-        // Editor events
+        // Editor events - 統合したinputイベントリスナー
+        let typingTimer;
         this.editor.addEventListener('input', () => {
             console.log('[Editor] Input event triggered');
+            
+            // 即座に実行する処理
             this.updatePreview();
             this.updateAutoTitle();
             this.markAsUnsaved();
             this.scheduleBackgroundSave();
-        });
-        
-        // Manual typing detection for history saving
-        let typingTimer;
-        this.editor.addEventListener('input', () => {
+            
+            // タイピング終了検出による履歴保存
             clearTimeout(typingTimer);
             typingTimer = setTimeout(() => {
                 this.saveToHistory('manual', this.editor.value);
@@ -194,10 +223,27 @@ class MarkdownEditor {
         this.editor.addEventListener('mouseup', () => this.handleTextSelection());
         this.editor.addEventListener('keyup', () => this.handleTextSelection());
         
+        // AIアシスタントパネル内でのテキスト選択監視
+        if (this.conversationHistory) {
+            this.conversationHistory.addEventListener('mouseup', () => this.handleConversationSelection());
+            this.conversationHistory.addEventListener('keyup', () => this.handleConversationSelection());
+        }
+        
         // AI Assistant Panel events
         if (this.sendAiInstructionBtn) {
             this.sendAiInstructionBtn.addEventListener('click', () => this.sendAIInstruction());
         }
+        
+        // 選択解除ボタン
+        if (this.selectionClearBtn) {
+            this.selectionClearBtn.addEventListener('click', () => this.clearSelection());
+        }
+        
+        // AIパネルのリサイズ機能
+        this.setupPanelResize();
+        
+        // スライドメニューのイベントリスナー
+        this.setupSlideMenu();
         
         if (this.aiInstruction) {
             this.aiInstruction.addEventListener('keydown', (e) => {
@@ -205,9 +251,18 @@ class MarkdownEditor {
                     this.sendAIInstruction();
                 }
             });
+            
+            // 入力内容変更時にボタン状態を更新
+            this.aiInstruction.addEventListener('input', () => {
+                this.updateAIButtonState();
+            });
+            
+            // 初期状態でボタン状態を更新
+            this.updateAIButtonState();
         }
         
-        
+        // Delete confirmation modal events
+        this.setupDeleteConfirmationModal();
         
         // Tab toggle event
         if (this.tabToggleBtn) {
@@ -262,7 +317,17 @@ class MarkdownEditor {
         });
 
         // Button events
-        this.newBtn.addEventListener('click', () => this.newFile());
+        this.newArticleBtn.addEventListener('click', async () => {
+            try {
+                this.showNewArticleLoading();
+                await this.newFile();
+                this.closeSlideMenu(); // 新規記事作成後にメニューを閉じる
+            } catch (error) {
+                console.error('Error creating new article:', error);
+            } finally {
+                this.hideNewArticleLoading();
+            }
+        });
         this.aiImageBtn.addEventListener('click', () => this.showAIImageModal());
         this.settingsBtn.addEventListener('click', () => this.showSettingsModal());
         this.toggleSidebarBtn.addEventListener('click', () => {
@@ -371,6 +436,9 @@ class MarkdownEditor {
             if (e.target === this.settingsModal) {
                 this.settingsModal.style.display = 'none';
             }
+            if (e.target === this.deleteConfirmationModal) {
+                this.hideDeleteConfirmationModal();
+            }
         });
     }
 
@@ -380,9 +448,16 @@ class MarkdownEditor {
             this.preview.innerHTML = marked(markdown);
         }
         
-        // プレビュータブがアクティブな場合、自動的にプレビューを表示
+        // プレビュータブがアクティブな場合は、タブ切り替えを呼ばない（無限再帰を防ぐ）
+        // プレビューの内容は既に更新されているので、タブの表示状態だけ確認
         if (this.currentActiveTab === 'preview') {
-            this.switchTab('preview');
+            // タブの表示状態だけ確認（switchTabは呼ばない）
+            if (this.previewContent && !this.previewContent.classList.contains('active')) {
+                this.previewContent.classList.add('active');
+            }
+            if (this.editorContent && this.editorContent.classList.contains('active')) {
+                this.editorContent.classList.remove('active');
+            }
         }
     }
     
@@ -917,7 +992,8 @@ ${this.originalContent}`;
             this.currentSelection = {
                 text: selectedText,
                 start: this.editor.selectionStart,
-                end: this.editor.selectionEnd
+                end: this.editor.selectionEnd,
+                source: 'editor'
             };
             
             // 選択テキスト情報を表示
@@ -927,11 +1003,62 @@ ${this.originalContent}`;
                     selectedText;
                 this.selectionPreview.textContent = preview;
                 this.selectedTextInfo.style.display = 'block';
+                
+                // 選択元の表示を更新
+                const selectionLabel = this.selectedTextInfo.querySelector('.selection-label');
+                if (selectionLabel) {
+                    selectionLabel.className = 'selection-label';
+                }
             }
         } else {
-            this.currentSelection = null;
-            if (this.selectedTextInfo) {
-                this.selectedTextInfo.style.display = 'none';
+            // エディターで選択がない場合、会話履歴での選択をクリアしない
+            if (this.currentSelection && this.currentSelection.source === 'editor') {
+                this.currentSelection = null;
+                if (this.selectedTextInfo) {
+                    this.selectedTextInfo.style.display = 'none';
+                }
+            }
+        }
+    }
+    
+    handleConversationSelection() {
+        const selection = window.getSelection();
+        const selectedText = selection.toString().trim();
+        
+        if (selectedText && selectedText.length > 0) {
+            // 選択範囲がAIアシスタントパネル内かどうかを確認
+            const range = selection.getRangeAt(0);
+            const container = range.commonAncestorContainer;
+            const conversationPanel = container.nodeType === Node.TEXT_NODE ? 
+                container.parentElement : container;
+            
+            if (this.conversationHistory.contains(conversationPanel)) {
+                this.currentSelection = {
+                    text: selectedText,
+                    source: 'conversation'
+                };
+                
+                if (this.selectedTextInfo && this.selectionPreview) {
+                    const preview = selectedText.length > 50 ? 
+                        selectedText.substring(0, 50) + '...' : 
+                        selectedText;
+                    this.selectionPreview.textContent = preview;
+                    this.selectedTextInfo.style.display = 'block';
+                    
+                    // 選択元の表示を更新
+                    const selectionLabel = this.selectedTextInfo.querySelector('.selection-label');
+                    if (selectionLabel) {
+                        selectionLabel.className = 'selection-label conversation';
+                    }
+                }
+            }
+        } else {
+            // 会話履歴で選択がない場合、エディターでの選択をクリアしない
+            if (this.currentSelection && this.currentSelection.source === 'conversation') {
+                this.currentSelection = null;
+                if (this.selectedTextInfo) {
+                    this.selectedTextInfo.style.display = 'none';
+                }
             }
         }
     }
@@ -958,11 +1085,36 @@ ${this.originalContent}`;
         try {
             this.isAiProcessing = true;
             
+            // 選択状態を保存（送信前に保存）
+            const hadSelection = !!this.currentSelection;
+            const selectionInfo = this.currentSelection ? {
+                text: this.currentSelection.text,
+                source: this.currentSelection.source
+            } : null;
+            
+            // 送信ボタンを無効化し、入力をすぐにクリア
+            this.updateAIButtonState();
+            this.aiInstruction.value = '';
+            
             // Web検索が必要かチェック
             const needsWebSearch = this.needsWebSearch(instruction);
             
-            // ユーザーメッセージを履歴に追加
-            this.addConversationMessage('user', instruction);
+            // ユーザーメッセージを履歴に追加（選択中のテキストがある場合は引用情報も含める）
+            let userMessage = instruction;
+            if (selectionInfo && selectionInfo.text) {
+                const selectedPreview = selectionInfo.text.length > 50 ? 
+                    selectionInfo.text.substring(0, 50) + '...' : 
+                    selectionInfo.text;
+                const sourceLabel = selectionInfo.source === 'conversation' ? 'AI会話' : 'エディター';
+                userMessage = `> **選択中 (${sourceLabel}):** ${selectedPreview}\n\n${instruction}`;
+            }
+            this.addConversationMessage('user', userMessage);
+            
+            // チャットログに追加した後に選択中表示を解除
+            if (hadSelection) {
+                console.log('チャットログ追加後に選択中表示を解除します');
+                this.clearSelection();
+            }
             
             // 指示を処理中表示
             this.showProcessingIndicator();
@@ -975,10 +1127,18 @@ ${this.originalContent}`;
             // AI指示を実行
             const result = await this.processAIInstruction(instruction);
             
-            // AI回答を履歴に追加（Web検索使用の場合はマーク付き）
+            // AI回答を履歴に追加（段階とWeb検索情報を含む）
             let responseMessage = result.response;
+            const instructionLevel = result.instructionLevel || this.getInstructionLevel(instruction);
+            
+            // 段階に応じたプレフィックスを追加
+            const levelPrefix = instructionLevel === 1 ? '💭' : 
+                               instructionLevel === 2 ? '💡' : '✏️';
+            
             if (needsWebSearch) {
-                responseMessage = `🔍 ${responseMessage}`;
+                responseMessage = `🔍${levelPrefix} ${responseMessage}`;
+            } else {
+                responseMessage = `${levelPrefix} ${responseMessage}`;
             }
             this.addConversationMessage('ai', responseMessage);
             
@@ -987,14 +1147,12 @@ ${this.originalContent}`;
                 this.applyAIEdit(result.editedContent, result.editType);
             }
             
-            // 入力をクリア
-            this.aiInstruction.value = '';
-            
         } catch (error) {
             console.error('AI指示処理エラー:', error);
             this.addConversationMessage('ai', `エラーが発生しました: ${error.message}`);
         } finally {
             this.isAiProcessing = false;
+            this.updateAIButtonState();
             this.hideProcessingIndicator();
             this.hideWebSearchIndicator();
         }
@@ -1006,10 +1164,12 @@ ${this.originalContent}`;
             this.editor.value;
             
         const isSelection = !!this.currentSelection;
+        const selectionSource = this.currentSelection ? this.currentSelection.source : null;
         
         console.log('AI指示処理:', {
             instruction,
             isSelection,
+            selectionSource,
             contentLength: targetContent.length
         });
         
@@ -1019,36 +1179,71 @@ ${this.originalContent}`;
         // 追記指示かどうかを判定
         const isAppendInstruction = this.isAppendInstruction(instruction);
         
+        // 指示の段階を判定
+        const instructionLevel = this.getInstructionLevel(instruction);
+        
+        // 会話履歴をOpenAI API形式に変換
+        const conversationHistory = this.buildConversationHistory();
+        
         // プロンプトを構築（デフォルトで非破壊的編集）
-        let systemPrompt = `あなたは高度な文書編集アシスタントです。ユーザーからの指示に従って、与えられたテキストを編集または分析してください。
+        let systemPrompt = `あなたは段階的相談ベースの文書編集アシスタントです。ユーザーと一緒に記事・文書を作り上げていく共同作業者として振る舞ってください。
 
-指示のタイプに応じて適切に処理してください：
-1. 編集指示の場合：編集結果のみを返す
-2. 質問や分析の場合：回答を返す
-3. 生成指示の場合：新しいコンテンツを生成
-4. 最新情報が必要な場合：Web検索を使用して最新情報を取得し、回答に反映する
+🤝 基本的な役割：
+- ユーザーとの継続的な対話を通じて記事を改善・発展させる
+- 過去の会話内容や調査結果を活用して一貫性のある提案を行う
+- 記事の全体的な方向性や品質向上をサポートする
 
-🛡️ 編集時の重要な原則（必ず守ってください）：
+ユーザーの指示の明確さに応じて、以下の3段階で対応してください。
+
+🔍 指示判定と対応方法：
+
+【第1段階：相談・アドバイス】（明確な編集指示がない場合）
+- 文書に関する質問、相談、方向性の検討
+- アイデア提案、構成案の提示、改善提案
+- 「〜についてどう思いますか？」「〜の方向性は？」「アイデアを教えて」など
+→ 相談相手として丁寧にアドバイスのみを提供
+
+【第2段階：確認付き提案】（編集意図があるが曖昧な場合）  
+- 「〜を改善したい」「〜をもっと良くしたい」「〜について書きたい」など
+- 編集意図は感じられるが、具体的な指示が不明確
+→ 具体的な編集案を提示し「このように編集しましょうか？」と確認を求める
+
+【第3段階：即座実行】（明確な編集指示がある場合）
+- 「編集して」「書いて」「追記して」「削除して」「修正して」など明確な動詞
+- 「〜に変更して」「〜を加えて」など具体的な指示
+→ 指示通りに即座に編集結果を返す
+⚠️ 第3段階では相槌や返事は一切不要！純粋な編集結果のみを返してください
+
+🛡️ 編集時の重要な原則（第3段階時に適用）：
 - 既存の内容を削除せず、追記・改善・拡張を優先してください
 - 「削除して」「短くして」などの明確な指示がない限り、内容を削らないでください
 - 元の構造や意味を保持し、マークダウン形式を維持してください
 - 文章の改善は既存部分を改良し、必要に応じて新しい内容を追加してください
 - 大幅な変更が必要な場合は、元の内容を残しつつ改善版を追加してください
-- 編集の場合は結果のみ、質問の場合は回答のみを返してください
 - Web検索を使用した場合は、情報源を明記してください
 
 ⚠️ 出力形式の重要な注意事項：
 - 【対象テキスト】【指示】【重要】などの内部フォーマット指示は絶対に出力に含めないでください
 - プロンプトの構造や指示の枠組みは表示せず、純粋なコンテンツのみを返してください
 - ユーザーに見せる必要のない技術的な指示や分類は一切出力しないでください
+- 第3段階（編集指示）では「はい、わかりました」「承知いたしました」等の相槌・返事は絶対に含めないでください
+- 編集結果は直接マークダウンエディタに反映されるため、編集内容のみを出力してください
 
-📝 記事フォーマット規則（必須）：
+📝 記事フォーマット規則（第3段階時に適用）：
 - 1行目は必ず「# タイトル」で開始してください
 - 内容は「## サブタイトル」でセクション分けしてください  
 - 既存のH1タイトル（# タイトル）は絶対に変更・削除しないでください
 - 既存のH2構造（## サブタイトル）も維持してください
 - 追記時は適切なH2セクションに追加するか、新しいH2セクションを作成してください
 - 新規作成時もこのフォーマットに従ってください`;
+
+        // 段階情報を追加
+        systemPrompt += `
+
+🎯 現在の指示段階：第${instructionLevel}段階
+${instructionLevel === 1 ? '→ 相談・アドバイスモード：質問に対して丁寧なアドバイスを提供' : 
+  instructionLevel === 2 ? '→ 確認付き提案モード：具体的な編集案を提示し確認を求める' : 
+  '→ 即座実行モード：指示通りに編集を実行'}`;
 
         if (isAppendInstruction) {
             systemPrompt += `
@@ -1080,7 +1275,13 @@ ${instruction}`;
         let response;
         
         if (needsWebSearch) {
-            // Responses API with web search
+            // Responses API with web search - 会話履歴を含む
+            const inputMessages = [
+                { role: 'system', content: systemPrompt },
+                ...conversationHistory,
+                { role: 'user', content: userPrompt }
+            ];
+            
             response = await fetch('https://api.openai.com/v1/responses', {
                 method: 'POST',
                 headers: {
@@ -1089,17 +1290,20 @@ ${instruction}`;
                 },
                 body: JSON.stringify({
                     model: 'gpt-4o',
-                    input: [
-                        { role: 'system', content: systemPrompt },
-                        { role: 'user', content: userPrompt }
-                    ],
+                    input: inputMessages,
                     tools: [{
                         type: 'web_search'
                     }]
                 })
             });
         } else {
-            // Traditional chat completions API
+            // Traditional chat completions API - 会話履歴を含む
+            const messages = [
+                { role: 'system', content: systemPrompt },
+                ...conversationHistory,
+                { role: 'user', content: userPrompt }
+            ];
+            
             response = await fetch('https://api.openai.com/v1/chat/completions', {
                 method: 'POST',
                 headers: {
@@ -1108,10 +1312,7 @@ ${instruction}`;
                 },
                 body: JSON.stringify({
                     model: 'gpt-4o',
-                    messages: [
-                        { role: 'system', content: systemPrompt },
-                        { role: 'user', content: userPrompt }
-                    ],
+                    messages: messages,
                     max_tokens: 4000,
                     temperature: 0.3
                 })
@@ -1173,13 +1374,19 @@ ${instruction}`;
         // 内部指示の漏れを除去
         aiResponse = this.cleanInternalInstructions(aiResponse);
         
-        // 編集結果かどうかを判定
-        const isEditResponse = this.isEditInstruction(instruction) || isAppendInstruction;
+        // 編集結果かどうかを判定（第3段階の場合のみ自動適用）
+        const isEditResponse = (instructionLevel === 3) || isAppendInstruction;
+        
+        // 編集結果の場合は相槌や返事も除去
+        if (isEditResponse) {
+            aiResponse = this.removeConversationalResponses(aiResponse);
+        }
         
         return {
             response: aiResponse,
             editedContent: isEditResponse ? aiResponse : null,
-            editType: isSelection ? 'selection' : 'full'
+            editType: isSelection ? 'selection' : 'full',
+            instructionLevel: instructionLevel
         };
     }
     
@@ -1235,25 +1442,297 @@ ${instruction}`;
         return cleanedText;
     }
     
-    isEditInstruction(instruction) {
-        const editKeywords = [
-            '編集', '修正', '変更', '改善', '調整', '書き換え', '直し', 
-            '入れ替え', '並べ替え', '追加', '削除', '短縮', '拡張',
-            'て', 'して', 'ください', 'してほしい', 'に変更', '改行'
+    // 編集時の相槌や返事を除去
+    removeConversationalResponses(text) {
+        // 相槌や返事のパターン
+        const conversationalPatterns = [
+            /^はい[、，]*\s*わかりました[！!。．]*\s*/i,
+            /^承知[いし]たしました[！!。．]*\s*/i,
+            /^了解[いし]たしました[！!。．]*\s*/i,
+            /^わかりました[！!。．]*\s*/i,
+            /^はい[！!。．]*\s*/i,
+            /^かしこまりました[！!。．]*\s*/i,
+            /^承知[！!。．]*\s*/i,
+            /^分かりました[！!。．]*\s*/i,
+            /^理解しました[！!。．]*\s*/i,
+            /^以下[にの].*編集[いし]たします[。．]*\s*/i,
+            /^記事を.*編集[いし]ます[。．]*\s*/i,
+            /^では[、，]*.*編集[いし]ます[。．]*\s*/i,
+            /^それでは[、，]*.*編集[いし]ます[。．]*\s*/i
         ];
         
-        return editKeywords.some(keyword => 
+        let cleanedText = text;
+        
+        // 各パターンで行頭から相槌を除去
+        conversationalPatterns.forEach(pattern => {
+            cleanedText = cleanedText.replace(pattern, '');
+        });
+        
+        // 行頭の不要な改行を除去
+        cleanedText = cleanedText.replace(/^\s*\n+/, '');
+        
+        return cleanedText.trim();
+    }
+    
+    // AI送信ボタンの状態を更新
+    updateAIButtonState() {
+        if (!this.sendAiInstructionBtn) return;
+        
+        const instruction = this.aiInstruction?.value?.trim() || '';
+        const isProcessing = this.isAiProcessing;
+        
+        // 処理中または入力が空の場合は無効化
+        const shouldDisable = isProcessing || !instruction;
+        
+        this.sendAiInstructionBtn.disabled = shouldDisable;
+        
+        if (isProcessing) {
+            this.sendAiInstructionBtn.textContent = '処理中...';
+            this.sendAiInstructionBtn.classList.add('processing');
+        } else {
+            this.sendAiInstructionBtn.textContent = '送信';
+            this.sendAiInstructionBtn.classList.remove('processing');
+        }
+    }
+    
+    // スライドメニューの設定
+    setupSlideMenu() {
+        console.log('setupSlideMenu called');
+        console.log('toggleSidebarBtn:', this.toggleSidebarBtn);
+        console.log('closeMenuBtn:', this.closeMenuBtn);
+        console.log('overlay:', this.overlay);
+        console.log('slideMenu:', this.slideMenu);
+        
+        // ハンバーガーメニューボタンのクリック
+        if (this.toggleSidebarBtn) {
+            this.toggleSidebarBtn.addEventListener('click', () => {
+                console.log('Toggle sidebar button clicked');
+                this.openSlideMenu();
+            });
+        }
+        
+        // メニューを閉じるボタンのクリック - より確実な実装
+        const closeMenuBtn = document.getElementById('close-menu-btn');
+        if (closeMenuBtn) {
+            console.log('Adding click event listener to close menu button');
+            closeMenuBtn.addEventListener('click', (e) => {
+                console.log('Close menu button clicked');
+                e.preventDefault();
+                e.stopPropagation();
+                this.closeSlideMenu();
+            });
+        } else {
+            console.error('closeMenuBtn not found!');
+        }
+        
+        // オーバーレイのクリック
+        if (this.overlay) {
+            this.overlay.addEventListener('click', () => {
+                this.closeSlideMenu();
+            });
+        }
+        
+        // ESCキーでメニューを閉じる
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && this.slideMenu && this.slideMenu.classList.contains('active')) {
+                this.closeSlideMenu();
+            }
+        });
+    }
+    
+    // スライドメニューを開く
+    openSlideMenu() {
+        if (this.slideMenu && this.overlay) {
+            this.slideMenu.classList.add('active');
+            this.overlay.classList.add('active');
+            document.body.style.overflow = 'hidden'; // スクロールを無効化
+        }
+    }
+    
+    // スライドメニューを閉じる
+    closeSlideMenu() {
+        console.log('closeSlideMenu called');
+        console.log('slideMenu:', this.slideMenu);
+        console.log('overlay:', this.overlay);
+        if (this.slideMenu && this.overlay) {
+            console.log('Closing slide menu');
+            this.slideMenu.classList.remove('active');
+            this.overlay.classList.remove('active');
+            document.body.style.overflow = ''; // スクロールを有効化
+            this.sidebarOpen = false; // 状態を同期
+        } else {
+            console.error('slideMenu or overlay not found!');
+        }
+    }
+    
+    // 新規記事ローディング表示
+    showNewArticleLoading() {
+        if (this.newArticleLoading) {
+            this.newArticleLoading.style.display = 'flex';
+        }
+        if (this.newArticleBtn) {
+            this.newArticleBtn.disabled = true;
+            this.newArticleBtn.style.opacity = '0.7';
+        }
+    }
+    
+    // 新規記事ローディング非表示
+    hideNewArticleLoading() {
+        if (this.newArticleLoading) {
+            this.newArticleLoading.style.display = 'none';
+        }
+        if (this.newArticleBtn) {
+            this.newArticleBtn.disabled = false;
+            this.newArticleBtn.style.opacity = '1';
+        }
+    }
+    
+    // AIパネルのリサイズ機能を設定
+    setupPanelResize() {
+        if (!this.resizeHandle || !this.aiAssistantPanel) return;
+        
+        let isResizing = false;
+        let startX = 0;
+        let startWidth = 0;
+        
+        const handleMouseDown = (e) => {
+            isResizing = true;
+            startX = e.clientX;
+            startWidth = this.aiAssistantPanel.offsetWidth;
+            
+            document.addEventListener('mousemove', handleMouseMove);
+            document.addEventListener('mouseup', handleMouseUp);
+            document.body.style.userSelect = 'none';
+            document.body.style.cursor = 'ew-resize';
+            
+            e.preventDefault();
+        };
+        
+        const handleMouseMove = (e) => {
+            if (!isResizing) return;
+            
+            const deltaX = startX - e.clientX; // 左にドラッグすると拡大
+            const newWidth = startWidth + deltaX;
+            
+            // 最小幅と最大幅の制限
+            const minWidth = 250;
+            const maxWidth = 800;
+            const constrainedWidth = Math.max(minWidth, Math.min(maxWidth, newWidth));
+            
+            this.aiAssistantPanel.style.flexBasis = `${constrainedWidth}px`;
+            
+            e.preventDefault();
+        };
+        
+        const handleMouseUp = () => {
+            isResizing = false;
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+            document.body.style.userSelect = '';
+            document.body.style.cursor = '';
+        };
+        
+        this.resizeHandle.addEventListener('mousedown', handleMouseDown);
+    }
+    
+    // 会話履歴をOpenAI API形式に変換（トークン管理付き）
+    buildConversationHistory() {
+        const messages = [];
+        
+        // 会話履歴の長さ制限（最大20件、またはトークン数制限）
+        const maxMessages = 20;
+        const maxHistoryTokens = 8000; // システムプロンプトとユーザープロンプト用にトークンを確保
+        
+        // 最近のメッセージから逆順で処理
+        const recentMessages = this.conversationMessages.slice(-maxMessages);
+        let totalTokens = 0;
+        
+        // 文字数による簡易トークン推定（日本語：1文字≈1.5トークン、英語：1文字≈0.25トークン）
+        const estimateTokens = (text) => {
+            const japaneseChars = (text.match(/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]/g) || []).length;
+            const otherChars = text.length - japaneseChars;
+            return Math.ceil(japaneseChars * 1.5 + otherChars * 0.25);
+        };
+        
+        for (const msg of recentMessages) {
+            // AIメッセージから段階アイコンを除去して純粋な内容のみ取得
+            let content = msg.content;
+            if (msg.type === 'ai') {
+                // 段階アイコン（💭💡✏️）とWeb検索アイコン（🔍）を除去
+                content = content.replace(/^[🔍💭💡✏️\s]+/, '').trim();
+            }
+            
+            const tokenCount = estimateTokens(content);
+            
+            // トークン制限を超える場合は古いメッセージを除外
+            if (totalTokens + tokenCount > maxHistoryTokens) {
+                break;
+            }
+            
+            messages.unshift({
+                role: msg.type === 'ai' ? 'assistant' : 'user',
+                content: content
+            });
+            
+            totalTokens += tokenCount;
+        }
+        
+        console.log(`会話履歴: ${messages.length}件のメッセージ（推定${totalTokens}トークン）`);
+        return messages;
+    }
+    
+    // 3段階の指示判定
+    getInstructionLevel(instruction) {
+        // 第3段階：明確な編集指示
+        const explicitEditKeywords = [
+            '編集して', '修正して', '変更して', '書いて', '追記して', '削除して',
+            '改善して', '調整して', '書き換えて', '直して', '生成して', '作成して',
+            'に変更して', 'を加えて', 'を削除', 'に修正', 'を書き直し', 'を改良',
+            'してください', 'してほしい', 'に書き換え', 'を短く', 'を拡張',
+            '作って', '入れて', '足して', '消して'
+        ];
+        
+        if (explicitEditKeywords.some(keyword => 
             instruction.toLowerCase().includes(keyword.toLowerCase())
-        );
+        )) {
+            return 3; // 即座実行
+        }
+        
+        // 第2段階：編集意図があるが曖昧
+        const ambiguousEditKeywords = [
+            '改善したい', 'よくしたい', '良くしたい', 'について書きたい',
+            'を書きたい', 'について考えたい', 'にしたい', 'できたらいい',
+            '変えたい', '直したい', '修正したい', '追加したい', '削りたい',
+            'もっと', 'さらに', 'より良い', 'ブラッシュアップ'
+        ];
+        
+        if (ambiguousEditKeywords.some(keyword => 
+            instruction.toLowerCase().includes(keyword.toLowerCase())
+        )) {
+            return 2; // 確認付き提案
+        }
+        
+        // 第1段階：相談・質問
+        return 1; // 相談・アドバイス
+    }
+    
+    isEditInstruction(instruction) {
+        return this.getInstructionLevel(instruction) === 3;
     }
     
     applyAIEdit(editedContent, editType, saveToHistory = true) {
+        // 会話履歴からの選択の場合は編集を適用しない
+        if (this.currentSelection && this.currentSelection.source === 'conversation') {
+            console.log('会話履歴からの選択のため、編集を適用しません');
+            return;
+        }
+        
         // 編集前の状態を履歴に保存
         if (saveToHistory) {
             this.saveToHistory('ai-edit', this.editor.value);
         }
         
-        if (editType === 'selection' && this.currentSelection) {
+        if (editType === 'selection' && this.currentSelection && this.currentSelection.source === 'editor') {
             // 選択範囲を編集結果で置換
             const before = this.editor.value.substring(0, this.currentSelection.start);
             const after = this.editor.value.substring(this.currentSelection.end);
@@ -1316,13 +1795,13 @@ ${instruction}`;
         }
         
         // 対話履歴を表示
-        this.conversationMessages.forEach(message => {
+        this.conversationMessages.forEach((message, index) => {
             const messageDiv = document.createElement('div');
             messageDiv.className = `conversation-item ${message.type}`;
             
             messageDiv.innerHTML = `
                 <div class="timestamp">${message.timeString}</div>
-                <div class="content">${this.escapeHtml(message.content)}</div>
+                <div class="content">${marked(message.content)}</div>
             `;
             
             this.conversationHistory.appendChild(messageDiv);
@@ -1376,6 +1855,11 @@ ${instruction}`;
     switchTab(tabName) {
         console.log('Switching to tab:', tabName);
         
+        // 既に同じタブがアクティブな場合は何もしない（無限再帰を防ぐ）
+        if (this.currentActiveTab === tabName) {
+            return;
+        }
+        
         // Update toggle button icon and title
         if (this.tabToggleBtn) {
             if (tabName === 'editor') {
@@ -1398,9 +1882,12 @@ ${instruction}`;
         
         this.currentActiveTab = tabName;
         
-        // プレビュータブに切り替える時は最新のマークダウンを反映
+        // プレビュータブに切り替える時は最新のマークダウンを反映（但し無限再帰を防ぐ）
         if (tabName === 'preview') {
-            this.updatePreview();
+            const markdown = this.editor.value;
+            if (this.preview) {
+                this.preview.innerHTML = marked(markdown);
+            }
         }
         
         // エディタタブに切り替える時はフォーカスを当てる
@@ -1820,11 +2307,9 @@ ${instruction}`;
             console.log('  Default Directory:', this.defaultDirectory);
             console.log('  Image Directory:', this.imageDirectory);
             
-            // デフォルトディレクトリが設定されている場合は自動的にサイドバーを開く
+            // デフォルトディレクトリが設定されている場合は記事リストを読み込み
             if (this.defaultDirectory) {
-                console.log('[loadSettings] Auto-opening sidebar with default directory');
-                this.sidebarOpen = true;
-                this.sidebar.classList.add('open');
+                console.log('[loadSettings] Loading articles from default directory');
                 // 記事リストを非同期で読み込み（UIをブロックしないように）
                 setTimeout(() => {
                     this.refreshArticles();
@@ -1842,20 +2327,14 @@ ${instruction}`;
         console.log('toggleSidebar called, current state:', this.sidebarOpen);
         
         try {
-            if (!this.sidebar) {
-                console.error('toggleSidebar: sidebar element not found');
-                return;
-            }
-            
             this.sidebarOpen = !this.sidebarOpen;
             console.log('New sidebar state:', this.sidebarOpen);
             
             if (this.sidebarOpen) {
-                console.log('Opening sidebar, adding class');
-                this.sidebar.classList.add('open');
-                console.log('Sidebar classes:', this.sidebar.className);
+                console.log('Opening slide menu');
+                this.openSlideMenu();
                 
-                // サイドバーが開かれたときのみ記事を読み込み、エラー時も安全に処理
+                // スライドメニューが開かれたときのみ記事を読み込み、エラー時も安全に処理
                 if (this.defaultDirectory) {
                     console.log('Calling refreshArticles...');
                     // 非同期で実行してUIをブロックしない
@@ -1871,8 +2350,8 @@ ${instruction}`;
                     }
                 }
             } else {
-                console.log('Closing sidebar, removing class');
-                this.sidebar.classList.remove('open');
+                console.log('Closing slide menu');
+                this.closeSlideMenu();
             }
         } catch (error) {
             console.error('Error in toggleSidebar:', error);
@@ -2365,6 +2844,39 @@ ${instruction}`;
     
     // 古いautoSave関数は削除（backgroundSaveで置き換え）
     
+    setupDeleteConfirmationModal() {
+        if (this.deleteModalClose) {
+            this.deleteModalClose.addEventListener('click', () => this.hideDeleteConfirmationModal());
+        }
+        
+        if (this.deleteCancelBtn) {
+            this.deleteCancelBtn.addEventListener('click', () => this.hideDeleteConfirmationModal());
+        }
+        
+        if (this.deleteConfirmBtn) {
+            this.deleteConfirmBtn.addEventListener('click', () => this.executeDelete());
+        }
+    }
+    
+    showDeleteConfirmationModal(article) {
+        this.currentDeletePath = article.path;
+        this.deleteArticleTitle.textContent = article.title;
+        this.deleteArticlePath.textContent = article.path;
+        this.deleteConfirmationModal.style.display = 'block';
+    }
+    
+    hideDeleteConfirmationModal() {
+        this.deleteConfirmationModal.style.display = 'none';
+        this.currentDeletePath = null;
+    }
+    
+    executeDelete() {
+        if (this.currentDeletePath) {
+            this.deleteArticle(this.currentDeletePath);
+            this.hideDeleteConfirmationModal();
+        }
+    }
+    
     confirmDeleteArticle(path) {
         try {
             const article = this.articles.find(a => a.path === path);
@@ -2373,11 +2885,7 @@ ${instruction}`;
                 return;
             }
             
-            const confirmed = confirm(`"「${article.title}」を削除しますか？\n\nこの操作は元に戻せません。`);
-            
-            if (confirmed) {
-                this.deleteArticle(path);
-            }
+            this.showDeleteConfirmationModal(article);
         } catch (error) {
             console.error('Error in confirmDeleteArticle:', error);
         }
@@ -2420,6 +2928,50 @@ ${instruction}`;
             this.showErrorMessage('削除エラー: ' + error.message);
         } finally {
             this.hideLoading();
+        }
+    }
+    
+    
+    // 選択解除機能
+    clearSelection() {
+        console.log('clearSelection called, current selection:', this.currentSelection);
+        this.currentSelection = null;
+        if (this.selectedTextInfo) {
+            this.selectedTextInfo.style.display = 'none';
+            console.log('選択中ウィンドウを非表示にしました');
+        }
+        
+        // エディターの選択もクリア
+        if (this.editor) {
+            this.editor.setSelectionRange(0, 0);
+        }
+        
+        // ブラウザの選択もクリア
+        if (window.getSelection) {
+            window.getSelection().removeAllRanges();
+        }
+        
+        console.log('選択を解除しました');
+    }
+    
+    // 外部リンクを外部ブラウザで開く設定
+    setupExternalLinks() {
+        // プレビューエリアとAI会話エリアのリンクを外部ブラウザで開く
+        const handleLinkClick = (e) => {
+            if (e.target.tagName === 'A' && e.target.href) {
+                e.preventDefault();
+                ipcRenderer.invoke('open-external-url', e.target.href);
+            }
+        };
+        
+        // プレビューエリア
+        if (this.preview) {
+            this.preview.addEventListener('click', handleLinkClick);
+        }
+        
+        // AI会話履歴エリア
+        if (this.conversationHistory) {
+            this.conversationHistory.addEventListener('click', handleLinkClick);
         }
     }
 }

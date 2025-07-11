@@ -21,7 +21,7 @@ body {
 .toolbar {
     display: flex;
     align-items: center;
-    padding: 10px 15px;
+    padding: 6px 15px;
     background-color: #fff;
     border-bottom: 1px solid #ddd;
     gap: 10px;
@@ -40,12 +40,12 @@ body {
 }
 
 .window-control-btn {
-    width: 28px;
-    height: 28px;
+    width: 24px;
+    height: 24px;
     border: none;
     border-radius: 50%;
     cursor: pointer;
-    font-size: 14px;
+    font-size: 12px;
     font-weight: bold;
     display: flex;
     align-items: center;
@@ -64,19 +64,24 @@ body {
 }
 
 .btn {
-    padding: 8px 16px;
+    padding: 6px 12px;
     border: 1px solid #ddd;
     background-color: #fff;
     color: #333;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 14px;
+    font-size: 13px;
     transition: all 0.2s;
 }
 
 .btn:hover {
     background-color: #f0f0f0;
     border-color: #ccc;
+}
+
+.hamburger-btn {
+    font-size: 18px;
+    font-weight: bold;
 }
 
 .ai-btn {
@@ -89,9 +94,48 @@ body {
     background-color: #45a049;
 }
 
+.ai-btn:disabled {
+    background-color: #cccccc;
+    color: #666666;
+    border-color: #cccccc;
+    cursor: not-allowed;
+}
+
+.ai-btn.processing {
+    background-color: #ff9800;
+    border-color: #ff9800;
+    position: relative;
+}
+
+.ai-btn.processing::after {
+    content: '';
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 12px;
+    height: 12px;
+    border: 2px solid transparent;
+    border-top: 2px solid white;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+/* AI画像生成ボタンセクション */
+.generate-section {
+    display: flex;
+    gap: 10px;
+    margin: 15px 0;
+    align-items: center;
+}
+
+.generate-section .btn {
+    flex: 0 0 auto;
+}
+
 .toolbar-separator {
     width: 1px;
-    height: 24px;
+    height: 20px;
     background-color: #ddd;
     margin: 0 5px;
 }
@@ -103,19 +147,107 @@ body {
     overflow: hidden;
 }
 
-.sidebar {
-    width: 0;
-    background-color: #fff;
-    border-right: 1px solid #ddd;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    transition: width 0.3s ease;
+/* オーバーレイ */
+.overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 998;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.3s ease, visibility 0.3s ease;
 }
 
-.sidebar.open {
-    width: 300px;
+.overlay.active {
+    opacity: 1;
+    visibility: visible;
 }
+
+/* スライドメニュー */
+.slide-menu {
+    position: fixed;
+    top: 0;
+    left: -350px;
+    width: 350px;
+    height: 100%;
+    background-color: #fff;
+    border-right: 1px solid #ddd;
+    z-index: 999;
+    transition: left 0.3s ease;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 2px 0 10px rgba(0, 0, 0, 0.1);
+}
+
+.slide-menu.active {
+    left: 0;
+}
+
+/* スライドメニューのヘッダー関連スタイルを削除 */
+
+.sidebar-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    padding-top: 20px;
+}
+
+.new-article-section {
+    margin-bottom: 20px;
+    text-align: center;
+}
+
+.new-article-btn {
+    width: 100%;
+    padding: 12px 20px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 16px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.new-article-btn:hover {
+    background-color: #45a049;
+}
+
+.new-article-btn:active {
+    transform: translateY(1px);
+}
+
+.loading-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 10px;
+    padding: 10px;
+    background-color: #f8f9fa;
+    border-radius: 4px;
+    font-size: 14px;
+    color: #666;
+}
+
+.spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid #e9ecef;
+    border-top: 2px solid #4CAF50;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+.sidebar {
+    display: none; /* 古いサイドバーは完全に非表示 */
+}
+
+/* .sidebar.open rule removed - using slide menu now */
 
 .sidebar-header {
     padding: 15px;
@@ -264,10 +396,35 @@ body {
 }
 
 .ai-assistant-panel {
-    flex: 1;
-    min-width: 350px;
-    max-width: 500px;
+    flex: 0 0 400px; /* flex-grow: 0, flex-shrink: 0, flex-basis: 400px */
+    min-width: 250px;
+    max-width: 800px;
     border-left: 1px solid #ddd;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+}
+
+/* リサイズハンドル */
+.resize-handle {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 6px;
+    cursor: ew-resize;
+    background-color: transparent;
+    z-index: 10;
+    border-left: 1px solid transparent;
+    transition: border-color 0.2s;
+}
+
+.resize-handle:hover {
+    border-left: 2px solid #4CAF50;
+}
+
+.resize-handle:active {
+    border-left: 2px solid #45a049;
 }
 
 .panel-header {
@@ -834,7 +991,106 @@ body {
 
 .conversation-item .content {
     white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    max-width: 100%;
+    overflow: hidden;
+    user-select: text;
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    -ms-user-select: text;
 }
+
+/* マークダウンコンテンツのスタイル調整 */
+.conversation-item .content h1,
+.conversation-item .content h2,
+.conversation-item .content h3,
+.conversation-item .content h4,
+.conversation-item .content h5,
+.conversation-item .content h6 {
+    margin: 8px 0 4px 0;
+    font-size: inherit;
+    font-weight: bold;
+}
+
+/* 選択中テキストの引用スタイル */
+.conversation-item.user .content blockquote {
+    background-color: #fff3cd;
+    border-left: 3px solid #ffeaa7;
+    margin: 4px 0 8px 0;
+    padding: 6px 8px;
+    font-size: 11px;
+    border-radius: 4px;
+}
+
+.conversation-item.user .content blockquote strong {
+    color: #856404;
+    font-size: 10px;
+}
+
+.conversation-item .content p {
+    margin: 4px 0;
+}
+
+.conversation-item .content ul,
+.conversation-item .content ol {
+    margin: 4px 0;
+    padding-left: 20px;
+}
+
+.conversation-item .content li {
+    margin: 2px 0;
+}
+
+.conversation-item .content code {
+    background-color: rgba(0, 0, 0, 0.1);
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    word-break: break-all;
+}
+
+.conversation-item .content pre {
+    background-color: rgba(0, 0, 0, 0.1);
+    padding: 8px;
+    border-radius: 4px;
+    overflow-x: auto;
+    max-width: 100%;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+}
+
+.conversation-item .content pre code {
+    background: none;
+    padding: 0;
+}
+
+.conversation-item .content blockquote {
+    border-left: 3px solid #ccc;
+    margin: 4px 0;
+    padding-left: 8px;
+    color: #666;
+}
+
+.conversation-item .content table {
+    max-width: 100%;
+    overflow-x: auto;
+    display: block;
+    white-space: nowrap;
+}
+
+.conversation-item .content table td,
+.conversation-item .content table th {
+    padding: 4px 8px;
+    border: 1px solid #ddd;
+}
+
+.conversation-item .content img {
+    max-width: 100%;
+    height: auto;
+}
+
 
 
 .ai-input-area {
@@ -850,11 +1106,25 @@ body {
     padding: 8px;
     margin-bottom: 10px;
     font-size: 12px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
 }
 
 .selection-label {
     font-weight: 600;
     color: #856404;
+}
+
+.selection-label::after {
+    content: " (エディター)";
+    font-size: 11px;
+    opacity: 0.7;
+}
+
+.selection-label.conversation::after {
+    content: " (AI会話)";
 }
 
 .selection-preview {
@@ -865,6 +1135,35 @@ body {
     max-height: 40px;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.selection-clear-btn {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    background: rgba(133, 100, 4, 0.8);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 18px;
+    height: 18px;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    opacity: 0.7;
+}
+
+.selection-clear-btn:hover {
+    background: rgba(133, 100, 4, 1);
+    opacity: 1;
+    transform: scale(1.1);
+}
+
+.selection-clear-btn:active {
+    transform: scale(0.9);
 }
 
 /* AI input container redesign */
@@ -905,8 +1204,9 @@ body {
 }
 
 .ai-assistant-panel.collapsed {
-    max-width: 60px;
+    flex: 0 0 60px;
     min-width: 60px;
+    max-width: 60px;
 }
 
 .ai-assistant-panel.collapsed .ai-assistant-content {
@@ -1091,4 +1391,123 @@ body {
         opacity: 1;
         transform: translateX(0);
     }
+}
+
+/* Delete confirmation modal styles */
+.delete-modal-content {
+    max-width: 500px;
+    animation: modalSlideIn 0.3s ease-out;
+}
+
+@keyframes modalSlideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.delete-modal-header {
+    background-color: #fff3cd;
+    border-bottom: 1px solid #ffeaa7;
+    color: #856404;
+}
+
+.delete-modal-header h3 {
+    color: #856404;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.delete-modal-body {
+    padding: 30px 20px;
+    text-align: center;
+}
+
+.delete-warning-icon {
+    font-size: 48px;
+    margin-bottom: 20px;
+    display: block;
+}
+
+.delete-message {
+    margin-bottom: 20px;
+}
+
+.delete-message p {
+    margin: 10px 0;
+    font-size: 16px;
+    color: #333;
+}
+
+.delete-article-info {
+    background-color: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 6px;
+    padding: 15px;
+    margin: 15px 0;
+    text-align: left;
+}
+
+.delete-article-info strong {
+    display: block;
+    font-size: 16px;
+    color: #333;
+    margin-bottom: 5px;
+}
+
+.delete-article-info span {
+    display: block;
+    font-size: 12px;
+    color: #666;
+    font-family: monospace;
+    word-break: break-all;
+}
+
+.delete-warning {
+    color: #dc3545 !important;
+    font-weight: 600;
+    font-size: 14px !important;
+}
+
+.delete-modal-footer {
+    padding: 15px 20px;
+    background-color: #f8f9fa;
+    border-top: 1px solid #e9ecef;
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+}
+
+.btn-cancel {
+    background-color: #6c757d;
+    color: white;
+    border-color: #6c757d;
+}
+
+.btn-cancel:hover {
+    background-color: #5a6268;
+    border-color: #545b62;
+}
+
+.btn-danger {
+    background-color: #dc3545;
+    color: white;
+    border-color: #dc3545;
+}
+
+.btn-danger:hover {
+    background-color: #c82333;
+    border-color: #bd2130;
+}
+
+.modal-footer {
+    border-top: 1px solid #e9ecef;
+    padding: 15px 20px;
+    background-color: #f8f9fa;
 }

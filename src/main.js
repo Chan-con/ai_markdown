@@ -8,9 +8,19 @@ const store = new Store();
 let mainWindow;
 
 function createWindow() {
-  mainWindow = new BrowserWindow({
+  // 保存されたウィンドウサイズを取得（デフォルト値も設定）
+  const savedBounds = store.get('windowBounds', {
     width: 1200,
     height: 800,
+    x: undefined,
+    y: undefined
+  });
+
+  mainWindow = new BrowserWindow({
+    width: savedBounds.width,
+    height: savedBounds.height,
+    x: savedBounds.x,
+    y: savedBounds.y,
     frame: false,
     webPreferences: {
       nodeIntegration: true,
@@ -29,8 +39,22 @@ function createWindow() {
     mainWindow = null;
   });
   
+  // ウィンドウサイズと位置の変更を保存
+  const saveBounds = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const bounds = mainWindow.getBounds();
+      store.set('windowBounds', bounds);
+    }
+  };
+
+  // リサイズ時とムーブ時に保存
+  mainWindow.on('resize', saveBounds);
+  mainWindow.on('move', saveBounds);
+  
   // ウィンドウを閉じる前に保存状態をチェック
   mainWindow.on('close', (event) => {
+    // ウィンドウサイズを保存
+    saveBounds();
     // フロントエンドに保存状態を確認してから閉じる
     event.preventDefault();
     mainWindow.webContents.send('before-close');
@@ -390,3 +414,14 @@ const template = [
 
 const menu = Menu.buildFromTemplate(template);
 Menu.setApplicationMenu(menu);
+
+// 外部URLを開く
+ipcMain.handle('open-external-url', async (event, url) => {
+  try {
+    await shell.openExternal(url);
+    return true;
+  } catch (error) {
+    console.error('Error opening external URL:', error);
+    throw error;
+  }
+});
