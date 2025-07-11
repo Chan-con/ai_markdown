@@ -151,6 +151,7 @@ class MarkdownEditor {
         
         // 統合AIアシスタント用
         this.conversationMessages = [];
+        this.articleConversationHistory = {}; // 記事ごとのチャット履歴を保存
         this.currentSelection = null;
         this.isAiProcessing = false;
         
@@ -174,6 +175,9 @@ class MarkdownEditor {
         
         // 外部リンクを外部ブラウザで開く設定
         this.setupExternalLinks();
+        
+        // チャット履歴の初期化
+        this.initializeConversationHistory();
         
         console.log('All elements initialized successfully');
     }
@@ -1778,6 +1782,9 @@ ${instruction}`;
         
         this.conversationMessages.push(message);
         this.renderConversationHistory();
+        
+        // 記事ごとのチャット履歴を保存
+        this.saveConversationHistory();
     }
     
     renderConversationHistory() {
@@ -1809,6 +1816,68 @@ ${instruction}`;
         
         // 最新メッセージにスクロール
         this.conversationHistory.scrollTop = this.conversationHistory.scrollHeight;
+    }
+    
+    // 記事ごとのチャット履歴を保存
+    async saveConversationHistory(filePath = null) {
+        const path = filePath || this.currentFile;
+        if (!path) return;
+        
+        this.articleConversationHistory[path] = [...this.conversationMessages];
+        
+        // Electron-storeに保存
+        try {
+            await ipcRenderer.invoke('set-store', 'articleConversationHistory', this.articleConversationHistory);
+            console.log('Chat history saved for article:', path);
+        } catch (error) {
+            console.error('Error saving chat history:', error);
+        }
+    }
+    
+    // 記事ごとのチャット履歴を読み込み
+    async loadConversationHistory(filePath = null) {
+        const path = filePath || this.currentFile;
+        if (!path) return;
+        
+        try {
+            // Electron-storeから読み込み
+            const allHistory = await ipcRenderer.invoke('get-store', 'articleConversationHistory') || {};
+            this.articleConversationHistory = allHistory;
+            
+            // 該当記事の履歴を設定
+            this.conversationMessages = this.articleConversationHistory[path] || [];
+            this.renderConversationHistory();
+            
+            console.log('Chat history loaded for article:', path, 'Messages:', this.conversationMessages.length);
+        } catch (error) {
+            console.error('Error loading chat history:', error);
+            this.conversationMessages = [];
+        }
+    }
+    
+    // 記事削除時のチャット履歴削除
+    async deleteConversationHistory(filePath) {
+        if (!filePath) return;
+        
+        try {
+            delete this.articleConversationHistory[filePath];
+            await ipcRenderer.invoke('set-store', 'articleConversationHistory', this.articleConversationHistory);
+            console.log('Chat history deleted for article:', filePath);
+        } catch (error) {
+            console.error('Error deleting chat history:', error);
+        }
+    }
+    
+    // チャット履歴の初期化
+    async initializeConversationHistory() {
+        try {
+            const allHistory = await ipcRenderer.invoke('get-store', 'articleConversationHistory') || {};
+            this.articleConversationHistory = allHistory;
+            console.log('Chat history initialized:', Object.keys(this.articleConversationHistory).length, 'articles');
+        } catch (error) {
+            console.error('Error initializing chat history:', error);
+            this.articleConversationHistory = {};
+        }
     }
     
     showProcessingIndicator() {
@@ -2632,6 +2701,12 @@ ${instruction}`;
             
             if (result) {
                 console.log('Setting editor content and updating state');
+                
+                // 現在のチャット履歴を保存（既存の記事がある場合）
+                if (this.currentFile) {
+                    await this.saveConversationHistory(this.currentFile);
+                }
+                
                 this.editor.value = result.content;
                 this.currentFile = result.filePath;
                 this.markAsSaved();
@@ -2650,6 +2725,9 @@ ${instruction}`;
                 this.currentHistoryIndex = -1;
                 this.saveToHistory('file-load', result.content);
                 this.updateHistoryButtons();
+                
+                // 新しい記事のチャット履歴を読み込み
+                await this.loadConversationHistory(result.filePath);
                 
                 // エディタにフォーカスを当てる
                 this.editor.focus();
@@ -2916,6 +2994,10 @@ ${instruction}`;
             if (!deleteResult) {
                 throw new Error('ファイルの削除に失敗しました');
             }
+            
+            // チャット履歴も削除
+            this.updateLoadingMessage('チャット履歴を削除中...');
+            await this.deleteConversationHistory(path);
             
             // 記事リストを更新
             this.updateLoadingMessage('記事リストを更新中...');
