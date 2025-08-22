@@ -858,13 +858,12 @@ ${this.originalContent}`;
                     'Authorization': `Bearer ${this.apiKey}`
                 },
                 body: JSON.stringify({
-                    model: 'gpt-4.1',
+                    model: 'gpt-5',
                     messages: [
                         { role: 'system', content: systemPrompt },
                         { role: 'user', content: userPrompt }
                     ],
-                    max_tokens: 4000,
-                    temperature: 0.3
+                    max_completion_tokens: 4000
                 })
             });
             
@@ -1293,7 +1292,7 @@ ${instruction}`;
                     'Authorization': `Bearer ${this.apiKey}`
                 },
                 body: JSON.stringify({
-                    model: 'gpt-4o',
+                    model: 'gpt-5',
                     input: inputMessages,
                     tools: [{
                         type: 'web_search'
@@ -1315,10 +1314,9 @@ ${instruction}`;
                     'Authorization': `Bearer ${this.apiKey}`
                 },
                 body: JSON.stringify({
-                    model: 'gpt-4o',
+                    model: 'gpt-5',
                     messages: messages,
-                    max_tokens: 4000,
-                    temperature: 0.3
+                    max_completion_tokens: 4000
                 })
             });
         }
@@ -2174,7 +2172,7 @@ ${instruction}`;
                     'Authorization': `Bearer ${this.apiKey}`
                 },
                 body: JSON.stringify({
-                    model: 'gpt-4.1',
+                    model: 'gpt-5',
                     messages: [
                         {
                             role: 'system',
@@ -2185,8 +2183,7 @@ ${instruction}`;
                             content: prompt
                         }
                     ],
-                    max_tokens: 1000,
-                    temperature: 0.7
+                    max_completion_tokens: 1000
                 })
             });
 
