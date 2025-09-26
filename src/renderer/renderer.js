@@ -1209,8 +1209,11 @@ ${this.originalContent}`;
             contentLength: targetContent.length
         });
         
-        // Web検索が必要かどうかを判定
+    // Web検索が必要かどうかを判定
         const needsWebSearch = this.needsWebSearch(instruction);
+
+    // ローカル知識検索（RAG）を使うかどうかを判定
+    const needsLocalRag = this.needsLocalRag(instruction);
         
         // 追記指示かどうかを判定
         const isAppendInstruction = this.isAppendInstruction(instruction);
@@ -1221,7 +1224,7 @@ ${this.originalContent}`;
         // 会話履歴をOpenAI API形式に変換
         const conversationHistory = this.buildConversationHistory();
         
-        // プロンプトを構築（デフォルトで非破壊的編集）
+    // プロンプトを構築（デフォルトで非破壊的編集）
         let systemPrompt = `あなたは段階的相談ベースの文書編集アシスタントです。ユーザーと一緒に記事・文書を作り上げていく共同作業者として振る舞ってください。
 
 🤝 基本的な役割：
@@ -1291,13 +1294,40 @@ ${instructionLevel === 1 ? '→ 相談・アドバイスモード：質問に対
 - 既存コンテンツを要約したり削除したりしないでください`;
         }
 
+        // RAGで拾った関連抜粋を取得
+        let ragPassages = [];
+        if (needsLocalRag && this.defaultDirectory) {
+            try {
+                ragPassages = await ipcRenderer.invoke('kb-search-passages', this.defaultDirectory, instruction, {
+                    maxFiles: 300,
+                    maxPassages: 6,
+                    maxCharsPerPassage: 500,
+                    includeFileMeta: true
+                });
+            } catch (e) {
+                console.warn('RAG検索に失敗:', e);
+            }
+        }
+
         const selectionInfo = isSelection ? `
 【対象テキスト】（選択範囲）
 ${targetContent}` : `
 【対象テキスト】（全体）
 ${targetContent}`;
 
-        let userPrompt = `${selectionInfo}
+        // RAG抜粋をプロンプトに付与（引用ブロック化）
+        let ragBlock = '';
+        if (Array.isArray(ragPassages) && ragPassages.length > 0) {
+            const formatted = ragPassages.map((p, idx) => {
+                const meta = [p.title, p.heading].filter(Boolean).join(' > ');
+                const header = meta ? `【参考${idx + 1}：${meta}】` : `【参考${idx + 1}】`;
+                // 引用として安全に付与
+                return `${header}\n> ${p.text.replace(/\n/g, '\n> ')}`;
+            }).join('\n\n');
+            ragBlock = `\n\n【参考資料（ローカル記事から抽出）】\n${formatted}`;
+        }
+
+        let userPrompt = `${selectionInfo}${ragBlock}
 
 【指示】
 ${instruction}`;
@@ -1423,6 +1453,18 @@ ${instruction}`;
             editType: isSelection ? 'selection' : 'full',
             instructionLevel: instructionLevel
         };
+    }
+
+    // 質問/要約/検索系キーワードでローカルRAGを有効化
+    needsLocalRag(instruction) {
+        const ragKeywords = [
+            'まとめ', '要約', '要点', '一覧', '振り返り', 'ダイジェスト', '俯瞰',
+            '関連', '参照', 'どれ', 'どの', 'について', '質問', '教えて', '比較', '類似',
+            '検索', '探して', '見つけて', 'ピックアップ', '抽出',
+            'データ', '実績', '過去', '以前', '書いた', '記事', 'メモ', 'ノート'
+        ];
+        const text = (instruction || '').toLowerCase();
+        return ragKeywords.some(k => text.includes(k.toLowerCase()));
     }
     
     needsWebSearch(instruction) {

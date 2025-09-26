@@ -425,3 +425,164 @@ ipcMain.handle('open-external-url', async (event, url) => {
     throw error;
   }
 });
+
+// RAG-lite: ローカルMarkdownから関連抜粋を検索
+// 単語頻度ベースの簡易スコアリングで、見出し/段落/コードブロックを塊に分割して上位を返す
+ipcMain.handle('kb-search-passages', async (event, directory, query, options = {}) => {
+  try {
+    if (!directory || !fs.existsSync(directory) || !query || !query.trim()) {
+      return [];
+    }
+
+    const {
+      maxFiles = 200,        // 走査する最大ファイル数
+      maxPassages = 6,       // 返す最大抜粋数
+      maxCharsPerPassage = 600, // 抜粋の最大文字数
+      includeFileMeta = true
+    } = options;
+
+    // 簡易トークナイズ（日本語と英数字を分ける）
+    const tokenize = (text) => {
+      return (text || '')
+        .toLowerCase()
+        .replace(/[\u3000\s]+/g, ' ')
+        .match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}a-z0-9#\-_.]+/giu) || [];
+    };
+
+    const queryTokens = tokenize(query);
+    if (queryTokens.length === 0) return [];
+
+    const files = fs.readdirSync(directory)
+      .filter(f => f.endsWith('.md'))
+      .slice(0, maxFiles);
+
+    const passages = [];
+
+    for (const file of files) {
+      const filePath = path.join(directory, file);
+      let content = '';
+      try {
+        content = fs.readFileSync(filePath, 'utf8');
+      } catch (e) {
+        console.warn('kb-search-passages: failed to read', filePath, e.message);
+        continue;
+      }
+
+      // タイトル抽出（先頭行 # タイトル）
+      const firstLine = content.split('\n')[0] || '';
+      const title = firstLine.startsWith('# ') ? firstLine.substring(2).trim() : file.replace(/\.md$/, '');
+
+      // チャンク分割: 見出し(H2以降)を基点に、大きすぎる場合は段落単位に
+      const chunks = splitMarkdownIntoChunks(content);
+
+      for (const ch of chunks) {
+        const tokens = tokenize(ch.text);
+        if (tokens.length === 0) continue;
+
+        // 単純な一致スコア: クエリ語の出現回数 + タイトル一致ボーナス + 見出し一致ボーナス
+        let score = 0;
+        for (const qt of queryTokens) {
+          // 厳密一致と部分一致で重み
+          const exact = tokens.filter(t => t === qt).length * 3;
+          const partial = tokens.filter(t => qt.length >= 2 && t.includes(qt)).length;
+          score += exact + partial;
+          if (title.toLowerCase().includes(qt)) score += 4; // タイトルに含まれるとボーナス
+          if (ch.heading && ch.heading.toLowerCase().includes(qt)) score += 2; // 見出しボーナス
+        }
+
+        if (score > 0) {
+          const snippet = ch.text.length > maxCharsPerPassage
+            ? ch.text.slice(0, maxCharsPerPassage) + '...'
+            : ch.text;
+
+          passages.push({
+            score,
+            file: includeFileMeta ? file : undefined,
+            path: includeFileMeta ? filePath : undefined,
+            title: includeFileMeta ? title : undefined,
+            heading: ch.heading,
+            text: snippet
+          });
+        }
+      }
+    }
+
+    // スコア降順で上位を返す
+    passages.sort((a, b) => b.score - a.score);
+    return passages.slice(0, maxPassages);
+  } catch (error) {
+    console.error('Error in kb-search-passages:', error);
+    return [];
+  }
+});
+
+// 内部関数: Markdownを見出し/段落ベースでチャンクに分割
+function splitMarkdownIntoChunks(markdown) {
+  try {
+    const lines = (markdown || '').split(/\r?\n/);
+    const chunks = [];
+    let currentHeading = '';
+    let buffer = [];
+
+    const flush = () => {
+      if (buffer.length === 0) return;
+      const text = buffer.join('\n').trim();
+      if (text) {
+        chunks.push({ heading: currentHeading, text });
+      }
+      buffer = [];
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      // コードブロックはそのまま塊に
+      if (/^```/.test(line)) {
+        // 開始行含め格納
+        const code = [line];
+        i++;
+        while (i < lines.length && !/^```/.test(lines[i])) {
+          code.push(lines[i]);
+          i++;
+        }
+        if (i < lines.length) code.push(lines[i]); // 終了 ```
+        buffer.push(code.join('\n'));
+        continue;
+      }
+
+      // H2以上の見出しで区切る
+      const m = /^(#{2,6})\s+(.*)$/.exec(line);
+      if (m) {
+        flush();
+        currentHeading = m[2].trim();
+        continue;
+      }
+
+      buffer.push(line);
+    }
+    flush();
+
+    // 大きすぎるチャンクは段落で分割
+    const refined = [];
+    for (const ch of chunks) {
+      if (ch.text.length <= 1200) {
+        refined.push(ch);
+      } else {
+        const parts = ch.text.split(/\n\n+/);
+        let acc = '';
+        for (const p of parts) {
+          if ((acc + '\n\n' + p).trim().length > 800) {
+            if (acc.trim()) refined.push({ heading: ch.heading, text: acc.trim() });
+            acc = p;
+          } else {
+            acc = acc ? acc + '\n\n' + p : p;
+          }
+        }
+        if (acc.trim()) refined.push({ heading: ch.heading, text: acc.trim() });
+      }
+    }
+    return refined;
+  } catch (e) {
+    console.warn('splitMarkdownIntoChunks failed:', e.message);
+    return [{ heading: '', text: markdown || '' }];
+  }
+}
