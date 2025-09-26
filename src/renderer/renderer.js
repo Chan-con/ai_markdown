@@ -154,6 +154,7 @@ class MarkdownEditor {
         this.articleConversationHistory = {}; // 記事ごとのチャット履歴を保存
         this.currentSelection = null;
         this.isAiProcessing = false;
+    this.conversationSessionId = 0; // セッションIDでレスポンス混入を防止
         
         // Delete confirmation modal elements
         this.deleteConfirmationModal = document.getElementById('delete-confirmation-modal');
@@ -638,6 +639,15 @@ class MarkdownEditor {
                 await this.flushAllSaves();
             }
             
+            // 現在の記事に紐づくチャット履歴を保存してから、新規記事用にAIアシスタントを初期化
+            if (this.currentFile) {
+                try {
+                    await this.saveConversationHistory(this.currentFile);
+                } catch (e) {
+                    console.warn('Failed to save conversation history before new file:', e);
+                }
+            }
+            
             this.updateLoadingMessage('新しいファイル名を生成中...');
             console.log('Resetting editor state for new file');
             this.editor.value = '';
@@ -650,6 +660,23 @@ class MarkdownEditor {
             this.unsavedChanges = false;
             this.selectedArticle = null;
             this.updatePreview();
+            
+            // AIアシスタントの状態を新規記事用にリセット
+            this.conversationMessages = [];
+            this.renderConversationHistory();
+            this.currentSelection = null;
+            if (this.selectedTextInfo) {
+                this.selectedTextInfo.style.display = 'none';
+            }
+            if (this.aiInstruction) {
+                this.aiInstruction.value = '';
+            }
+            this.isAiProcessing = false;
+            this.hideProcessingIndicator();
+            this.hideWebSearchIndicator();
+            this.updateAIButtonState();
+            // 新しい会話セッションを開始
+            this.conversationSessionId++;
             
             // 記事リストの選択状態をリセット
             if (this.sidebarOpen) {
@@ -1087,6 +1114,7 @@ ${this.originalContent}`;
         
         try {
             this.isAiProcessing = true;
+            const requestSessionId = this.conversationSessionId;
             
             // 選択状態を保存（送信前に保存）
             const hadSelection = !!this.currentSelection;
@@ -1129,6 +1157,11 @@ ${this.originalContent}`;
             
             // AI指示を実行
             const result = await this.processAIInstruction(instruction);
+            // セッションが切り替わっていないか確認（新規記事や別記事に切り替えた場合は無視）
+            if (requestSessionId !== this.conversationSessionId) {
+                console.warn('Stale AI response ignored due to session switch');
+                return;
+            }
             
             // AI回答を履歴に追加（段階とWeb検索情報を含む）
             let responseMessage = result.response;
@@ -2725,6 +2758,8 @@ ${instruction}`;
                 
                 // 新しい記事のチャット履歴を読み込み
                 await this.loadConversationHistory(result.filePath);
+                // 記事切替ごとに会話セッションを更新
+                this.conversationSessionId++;
                 
                 // エディタにフォーカスを当てる
                 this.editor.focus();
