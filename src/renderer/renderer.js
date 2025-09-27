@@ -99,6 +99,7 @@ class MarkdownEditor {
         this.selectionPreview = document.getElementById('selection-preview');
         this.selectionClearBtn = document.getElementById('selection-clear-btn');
         this.webSearchIndicator = document.getElementById('web-search-indicator');
+        this.ragSearchIndicator = document.getElementById('rag-search-indicator');
         
         // Slide menu elements
         this.slideMenu = document.getElementById('slide-menu');
@@ -1127,10 +1128,10 @@ ${this.originalContent}`;
             this.updateAIButtonState();
             this.aiInstruction.value = '';
             
-            // Web検索が必要かチェック
-            const needsWebSearch = this.needsWebSearch(instruction);
-            
-            // ユーザーメッセージを履歴に追加（選択中のテキストがある場合は引用情報も含める）
+        // Web検索が必要か（ヒューリスティック）
+        const heuristicWeb = this.needsWebSearch(instruction);
+        
+        // ユーザーメッセージを履歴に追加（選択中のテキストがある場合は引用情報も含める）
             let userMessage = instruction;
             if (selectionInfo && selectionInfo.text) {
                 const selectedPreview = selectionInfo.text.length > 50 ? 
@@ -1150,10 +1151,7 @@ ${this.originalContent}`;
             // 指示を処理中表示
             this.showProcessingIndicator();
             
-            // Web検索インジケーターを表示
-            if (needsWebSearch) {
-                this.showWebSearchIndicator();
-            }
+            // Web検索インジケーターは最終判定後（processAIInstruction内）で表示する
             
             // AI指示を実行
             const result = await this.processAIInstruction(instruction);
@@ -1171,7 +1169,7 @@ ${this.originalContent}`;
             const levelPrefix = instructionLevel === 1 ? '💭' : 
                                instructionLevel === 2 ? '💡' : '✏️';
             
-            if (needsWebSearch) {
+            if (result.needsWebSearch) {
                 responseMessage = `🔍${levelPrefix} ${responseMessage}`;
             } else {
                 responseMessage = `${levelPrefix} ${responseMessage}`;
@@ -1209,11 +1207,36 @@ ${this.originalContent}`;
             contentLength: targetContent.length
         });
         
-    // Web検索が必要かどうかを判定
-        const needsWebSearch = this.needsWebSearch(instruction);
-
-    // ローカル知識検索（RAG）を使うかどうかを判定
-    const needsLocalRag = this.needsLocalRag(instruction);
+        // ルーター主体で判定（キーワードは使わない）
+        let needsWebSearch = false;
+        let needsLocalRag = false;
+        // AIルーターで最終判定（失敗時は両方false）
+        try {
+            const route = await this.decideRetrievalMode(instruction);
+            if (route && typeof route.web === 'boolean' && typeof route.local === 'boolean') {
+                console.log('[Router] decision:', route);
+                needsWebSearch = route.web;
+                needsLocalRag = route.local;
+            } else {
+                // ルーターが無効な場合のフォールバック：強いローカル意図ならRAG実施
+                const txt = (instruction || '').toLowerCase();
+                const fallbackLocal = this.hasStrongPastLocalIntent(txt);
+                const explicitLatest = ['最新','ニュース','速報','今日','今週','今月','今年','現在','最新情報','最新動向','最新状況']
+                    .some(w => txt.includes(w));
+                needsLocalRag = !!fallbackLocal && !!this.defaultDirectory;
+                needsWebSearch = explicitLatest && !fallbackLocal; // 最新性のみが主眼ならwebのみ
+                console.log('[Router] fallback decision:', { local: needsLocalRag, web: needsWebSearch });
+            }
+        } catch (e) {
+            console.warn('Retrieval router failed, applying heuristic fallback:', e);
+            const txt = (instruction || '').toLowerCase();
+            const fallbackLocal = this.hasStrongPastLocalIntent(txt);
+            const explicitLatest = ['最新','ニュース','速報','今日','今週','今月','今年','現在','最新情報','最新動向','最新状況']
+                .some(w => txt.includes(w));
+            needsLocalRag = !!fallbackLocal && !!this.defaultDirectory;
+            needsWebSearch = explicitLatest && !fallbackLocal;
+            console.log('[Router] heuristic fallback decision:', { local: needsLocalRag, web: needsWebSearch });
+        }
         
         // 追記指示かどうかを判定
         const isAppendInstruction = this.isAppendInstruction(instruction);
@@ -1225,7 +1248,7 @@ ${this.originalContent}`;
         const conversationHistory = this.buildConversationHistory();
         
     // プロンプトを構築（デフォルトで非破壊的編集）
-        let systemPrompt = `あなたは段階的相談ベースの文書編集アシスタントです。ユーザーと一緒に記事・文書を作り上げていく共同作業者として振る舞ってください。
+    let systemPrompt = `あなたは段階的相談ベースの文書編集アシスタントです。ユーザーと一緒に記事・文書を作り上げていく共同作業者として振る舞ってください。
 
 🤝 基本的な役割：
 - ユーザーとの継続的な対話を通じて記事を改善・発展させる
@@ -1267,6 +1290,7 @@ ${this.originalContent}`;
 - ユーザーに見せる必要のない技術的な指示や分類は一切出力しないでください
 - 第3段階（編集指示）では「はい、わかりました」「承知いたしました」等の相槌・返事は絶対に含めないでください
 - 編集結果は直接マークダウンエディタに反映されるため、編集内容のみを出力してください
+ - 具体的なテンプレートや雛形（例：見出しだけが並ぶ骨組み、プレースホルダだらけの枠）は出力しないでください。内容のない枠はノイズになります。必要な場合のみ最小限の構造と実文で返してください。
 
 📝 記事フォーマット規則（第3段階時に適用）：
 - 1行目は必ず「# タイトル」で開始してください
@@ -1294,19 +1318,63 @@ ${instructionLevel === 1 ? '→ 相談・アドバイスモード：質問に対
 - 既存コンテンツを要約したり削除したりしないでください`;
         }
 
-        // RAGで拾った関連抜粋を取得
+        // RAGで拾った関連抜粋を取得（埋め込み検索優先、失敗時はキーワード検索）
         let ragPassages = [];
         if (needsLocalRag && this.defaultDirectory) {
+            this.showRagSearchIndicator();
             try {
-                ragPassages = await ipcRenderer.invoke('kb-search-passages', this.defaultDirectory, instruction, {
-                    maxFiles: 300,
-                    maxPassages: 6,
-                    maxCharsPerPassage: 500,
-                    includeFileMeta: true
+                // 必要ならインデックスを自動生成/更新
+                const buildRes = await ipcRenderer.invoke('kb-build-index', this.defaultDirectory, { maxFiles: 2000 });
+                // 失敗した場合は即フォールバック
+                if (!buildRes || buildRes.ok === false) {
+                    throw new Error(buildRes?.error || 'kb-build-index failed');
+                }
+                ragPassages = await ipcRenderer.invoke('kb-search-embeddings', this.defaultDirectory, instruction, {
+                    topK: 6,
+                    maxCharsPerPassage: 500
                 });
-            } catch (e) {
-                console.warn('RAG検索に失敗:', e);
+                if (!Array.isArray(ragPassages) || ragPassages.length === 0) {
+                    throw new Error('embeddings search returned no results');
+                }
+            } catch (e1) {
+                console.warn('埋め込み検索に失敗、キーワード検索にフォールバック:', e1);
+                try {
+                    ragPassages = await ipcRenderer.invoke('kb-search-passages', this.defaultDirectory, instruction, {
+                        maxFiles: 300,
+                        maxPassages: 6,
+                        maxCharsPerPassage: 500,
+                        includeFileMeta: true
+                    });
+                    // 0件なら広めのフォールバッククエリで再検索（Google検索関連を想定）
+                    if (!Array.isArray(ragPassages) || ragPassages.length === 0) {
+                        const fallbackQuery = 'Google 検索 SEO SERP Search Console 生成AI SGE AI Overview';
+                        ragPassages = await ipcRenderer.invoke('kb-search-passages', this.defaultDirectory, fallbackQuery, {
+                            maxFiles: 2000,
+                            maxPassages: 6,
+                            maxCharsPerPassage: 500,
+                            includeFileMeta: true
+                        });
+                    }
+                } catch (e2) {
+                    console.warn('キーワード検索も失敗:', e2);
+                }
+            } finally {
+                this.hideRagSearchIndicator();
             }
+            console.log('[RAG] passages found:', Array.isArray(ragPassages) ? ragPassages.length : 0);
+        }
+
+        // RAGが必須の指示で抜粋が0件なら、汎用生成に進まない（明示メッセージを返す）
+        if (needsLocalRag && (!Array.isArray(ragPassages) || ragPassages.length === 0)) {
+            const msg = `過去記事の要約をご希望ですが、現在の保存ディレクトリ内から該当する内容を見つけられませんでした。\n\n確認してください:\n- 設定の保存ディレクトリに、対象の過去記事（Markdown）が置かれているか\n- サブフォルダも対象ですが、ファイル名や見出しに「Google 検索/SEO/SERP/Search Console」等の語が含まれていると見つかりやすくなります\n\nヒント: 指示文に具体語を足すと精度が上がります（例: 『Search Console 関連の過去記事を要約』）。`;
+            return {
+                response: msg,
+                editedContent: null,
+                editType: isSelection ? 'selection' : 'full',
+                instructionLevel: instructionLevel,
+                needsWebSearch: false,
+                needsLocalRag: true
+            };
         }
 
         const selectionInfo = isSelection ? `
@@ -1321,16 +1389,29 @@ ${targetContent}`;
             const formatted = ragPassages.map((p, idx) => {
                 const meta = [p.title, p.heading].filter(Boolean).join(' > ');
                 const header = meta ? `【参考${idx + 1}：${meta}】` : `【参考${idx + 1}】`;
-                // 引用として安全に付与
-                return `${header}\n> ${p.text.replace(/\n/g, '\n> ')}`;
+                // 出典ジャンプ用の行（path埋め込み）。AI回答内には出さずユーザー提示用に保持するため、会話ログに二重化で利用
+                const source = p.path ? `（source:${p.path}）` : '';
+                return `${header}${source}\n> ${p.text.replace(/\n/g, '\n> ')}`;
             }).join('\n\n');
             ragBlock = `\n\n【参考資料（ローカル記事から抽出）】\n${formatted}`;
         }
 
-        let userPrompt = `${selectionInfo}${ragBlock}
+    let userPrompt = `${selectionInfo}${ragBlock}
 
 【指示】
 ${instruction}`;
+
+    // RAG資料がある場合は、その範囲での要約/整理を強調
+    if (Array.isArray(ragPassages) && ragPassages.length > 0) {
+        const sumHints = ['まとめ', '要約', '整理', '俯瞰', 'ダイジェスト', '総括', '一覧'];
+        const lowerInst = instruction.toLowerCase();
+        const wantsSum = sumHints.some(w => lowerInst.includes(w.toLowerCase()));
+        if (wantsSum) {
+        userPrompt += `
+
+【重要】上の参考資料（ローカル記事から抽出）に基づいて要約・整理してください。外部の一般論や最新ニュースは混ぜないでください。根拠のない新情報の追加は禁止です。`;
+        }
+    }
 
         if (isAppendInstruction) {
             userPrompt += `
@@ -1347,21 +1428,23 @@ ${instruction}`;
                 ...conversationHistory,
                 { role: 'user', content: userPrompt }
             ];
-            
-            response = await fetch('https://api.openai.com/v1/responses', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${this.apiKey}`
-                },
-                body: JSON.stringify({
-                    model: 'gpt-5',
-                    input: inputMessages,
-                    tools: [{
-                        type: 'web_search'
-                    }]
-                })
-            });
+            this.showWebSearchIndicator();
+            try {
+                response = await fetch('https://api.openai.com/v1/responses', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${this.apiKey}`
+                    },
+                    body: JSON.stringify({
+                        model: 'gpt-5',
+                        input: inputMessages,
+                        tools: [{ type: 'web_search' }]
+                    })
+                });
+            } finally {
+                this.hideWebSearchIndicator();
+            }
         } else {
             // Traditional chat completions API - 会話履歴を含む
             const messages = [
@@ -1451,8 +1534,104 @@ ${instruction}`;
             response: aiResponse,
             editedContent: isEditResponse ? aiResponse : null,
             editType: isSelection ? 'selection' : 'full',
-            instructionLevel: instructionLevel
+            instructionLevel: instructionLevel,
+            needsWebSearch,
+            needsLocalRag
         };
+    }
+
+    // === AIベースのルーティング判定 ===
+    async decideRetrievalMode(instruction) {
+        try {
+            if (!this.apiKey) return null;
+
+            // 明示の否定/強制を優先
+            const txt = (instruction || '').toLowerCase();
+            const disableWeb = ['web検索なし','ウェブ検索なし','インターネット検索なし','ローカルのみ','ローカル記事のみ','ローカルだけ','オフライン','ragのみ','ragだけ','ローカル検索のみ']
+                .some(k => txt.includes(k));
+            if (disableWeb) {
+                const forceLocal = ['ragのみ','ragだけ','ローカルのみ','ローカル記事のみ','ローカル検索のみ'].some(k => txt.includes(k));
+                return { local: !!forceLocal, web: false };
+            }
+
+            // 強いローカル要約/振り返り意図を早期検出（例: 「過去記事をまとめて」「以前書いた記事の要約」など）
+            const hasPastLocal = this.hasStrongPastLocalIntent(txt);
+            const summarizeWords = ['まとめ', '要約', '整理', '振り返り', '一覧', 'アーカイブ', 'ダイジェスト', '総括', 'ハイライト'];
+            const wantsSummary = summarizeWords.some(w => txt.includes(w));
+            const explicitLatest = ['最新','ニュース','速報','今日','今週','今月','今年','現在','最新情報','最新動向','最新状況']
+                .some(w => txt.includes(w));
+            if (hasPastLocal && wantsSummary && !explicitLatest) {
+                // ディレクトリ未設定なら local は実行不能なので無効化
+                const canLocal = !!this.defaultDirectory;
+                return { local: canLocal, web: false };
+            }
+
+            // プロンプト：JSONのみ返す
+            const system = 'You are a retrieval router. Output ONLY strict JSON with keys "local" and "web" (booleans). No prose, no code fences.';
+            const examples = [
+                {
+                    q: 'Googleの検索について書いてる過去記事をまとめてほしいです',
+                    a: { local: true, web: false }
+                },
+                {
+                    q: 'Google 検索の最新アップデートについて教えて',
+                    a: { local: false, web: true }
+                },
+                {
+                    q: '過去の記事を踏まえて、今年のGoogle検索のアップデートを整理して。必要なら最新情報も参照',
+                    a: { local: true, web: true }
+                },
+                {
+                    q: 'この文章を推敲して',
+                    a: { local: false, web: false }
+                }
+            ];
+            const user = `Instruction: ${instruction}\n\nDecide whether to use the user's local markdown articles (local) and/or web search (web).\nRules:\n- The presence of words like "検索" or "Google検索" DOES NOT imply web=true.\n- If the user asks to summarize/overview/organize past writings (e.g., 過去/以前 + 記事/ブログ + まとめ/要約/整理), set local=true and web=false unless latest/real-time info is explicitly requested.\n- If the user explicitly needs latest/real-time news, set web=true.\n- If both past writings and latest info are needed, set both true.\n- If neither source is needed (pure editing or brainstorming), set both false.\n\nExamples:\n${examples.map(e => `Q: ${e.q}\nA: ${JSON.stringify(e.a)}`).join('\n')}\n\nAnswer with JSON only.`;
+
+            const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.apiKey}`
+                },
+                body: JSON.stringify({
+                    model: 'gpt-5',
+                    messages: [
+                        { role: 'system', content: system },
+                        { role: 'user', content: user }
+                    ],
+                    max_completion_tokens: 100
+                })
+            });
+
+            if (!response.ok) return null;
+            const data = await response.json();
+            const text = data?.choices?.[0]?.message?.content?.trim() || '';
+            const json = this.parseRouterJson(text);
+            if (json && typeof json.local === 'boolean' && typeof json.web === 'boolean') {
+                // 実行可能性を後処理（保存ディレクトリ未設定ならlocalは無効化）
+                if (!this.defaultDirectory) json.local = false;
+                return json;
+            }
+            return null;
+        } catch (e) {
+            console.warn('decideRetrievalMode error:', e);
+            return null;
+        }
+    }
+
+    parseRouterJson(text) {
+        try {
+            let s = text.trim();
+            // ```json ... ``` を除去
+            s = s.replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
+            // 単一行に不要な前置きを含む場合の簡易抽出
+            const match = s.match(/\{[\s\S]*\}/);
+            if (match) s = match[0];
+            return JSON.parse(s);
+        } catch (_) {
+            return null;
+        }
     }
 
     // 質問/要約/検索系キーワードでローカルRAGを有効化
@@ -1471,14 +1650,43 @@ ${instruction}`;
         const webSearchKeywords = [
             '最新', '最新情報', '最新の', '今日', '今週', '今月', '今年', '現在',
             'ニュース', '最近', '近況', '最新動向', '最新状況', '今の状況',
-            '検索', '調べて', '調査', '情報', '詳細', '詳しく',
+            // '検索' は汎用すぎるため除外（誤検知を減らす）
+            '調べて', '調査', '情報', '詳細', '詳しく',
             '最新版', '最新技術', '最新研究', '最新発表', '最新リリース',
             '今何時', '天気', '株価', '為替', '価格', '相場'
         ];
-        
+        // 明示的にWeb検索を無効にする否定キーワード（優先）
+        const disableKeywords = [
+            'web検索なし', 'ウェブ検索なし', 'インターネット検索なし',
+            'ローカルのみ', 'ローカル記事のみ', 'ローカルだけ', 'オフライン',
+            'ragのみ', 'ragだけ', 'ローカル検索のみ'
+        ];
+
+        const text = (instruction || '').toLowerCase();
+
+        if (disableKeywords.some(k => text.includes(k))) {
+            return false;
+        }
+
+        // 「過去の/以前の 記事/メモ/ノート から ～」は原則ローカル優先（最新系語が無ければWebはオフ）
+        if (this.hasStrongPastLocalIntent(text)) {
+            const explicitLatest = ['最新','今日','今週','今月','今年','現在','ニュース','最新情報','最新動向','最新状況'].some(k => text.includes(k));
+            if (!explicitLatest) return false;
+        }
+
         return webSearchKeywords.some(keyword => 
-            instruction.toLowerCase().includes(keyword.toLowerCase())
+            text.includes(keyword.toLowerCase())
         );
+    }
+
+    // 過去コンテンツを明示する強い意図検出
+    hasStrongPastLocalIntent(text) {
+        const pastWords = ['過去', '以前', 'これまで', 'アーカイブ', '過去の記事', '書いてる', '書いた'];
+        const corpusWords = ['記事', 'メモ', 'ノート', 'ブログ', 'ポスト'];
+        const t = (text || '').toLowerCase();
+        const hasPast = pastWords.some(k => t.includes(k));
+        const hasCorpus = corpusWords.some(k => t.includes(k));
+        return hasPast && hasCorpus;
     }
     
     isAppendInstruction(instruction) {
@@ -1878,10 +2086,17 @@ ${instruction}`;
         this.conversationMessages.forEach((message, index) => {
             const messageDiv = document.createElement('div');
             messageDiv.className = `conversation-item ${message.type}`;
-            
+
+            // 参考資料のsource:pathをクリック可能化
+            const html = marked(message.content);
+            const enhanced = html.replace(/（source:([^\)]+)）/g, (m, p1) => {
+                const safe = this.escapeHtml(p1);
+                return `（<a href="#" class="kb-source-link" data-path="${safe}">出典へジャンプ</a>）`;
+            });
+
             messageDiv.innerHTML = `
                 <div class="timestamp">${message.timeString}</div>
-                <div class="content">${marked(message.content)}</div>
+                <div class="content">${enhanced}</div>
             `;
             
             this.conversationHistory.appendChild(messageDiv);
@@ -1889,6 +2104,18 @@ ${instruction}`;
         
         // 最新メッセージにスクロール
         this.conversationHistory.scrollTop = this.conversationHistory.scrollHeight;
+
+        // ソースリンクのクリックで記事を開く
+        const links = this.conversationHistory.querySelectorAll('.kb-source-link');
+        links.forEach(a => {
+            a.addEventListener('click', (e) => {
+                e.preventDefault();
+                const p = a.getAttribute('data-path');
+                if (p) {
+                    this.loadArticle(p);
+                }
+            });
+        });
     }
     
     // 記事ごとのチャット履歴を保存
@@ -1980,6 +2207,20 @@ ${instruction}`;
     
     hideWebSearchIndicator() {
         const indicator = document.getElementById('web-search-indicator');
+        if (indicator) {
+            indicator.style.display = 'none';
+        }
+    }
+
+    showRagSearchIndicator() {
+        const indicator = document.getElementById('rag-search-indicator');
+        if (indicator) {
+            indicator.style.display = 'flex';
+        }
+    }
+
+    hideRagSearchIndicator() {
+        const indicator = document.getElementById('rag-search-indicator');
         if (indicator) {
             indicator.style.display = 'none';
         }

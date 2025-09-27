@@ -5,6 +5,15 @@ const Store = require('electron-store');
 
 const store = new Store();
 
+// Force transformers to use WASM backend to avoid native onnxruntime-node in Electron
+try {
+  if (!process.env.TRANSFORMERS_BACKEND) {
+    process.env.TRANSFORMERS_BACKEND = 'wasm';
+  }
+} catch (_) {
+  // ignore if env not writable
+}
+
 let mainWindow;
 
 function createWindow() {
@@ -426,6 +435,275 @@ ipcMain.handle('open-external-url', async (event, url) => {
   }
 });
 
+// =================== Embeddings-based KB index/search ===================
+// 依存: @xenova/transformers（package.json 追加済み）
+let embeddingPipelinePromise = null;
+let kbIndexCache = new Map(); // key: directory, value: { model, chunks: [...], files: {...}, lastBuilt }
+let embeddingsPermanentlyDisabled = false; // 初期化失敗後は以降の試行を停止
+
+async function getEmbeddingPipeline() {
+  if (embeddingsPermanentlyDisabled) {
+    throw new Error('embeddings disabled');
+  }
+  if (!embeddingPipelinePromise) {
+    embeddingPipelinePromise = (async () => {
+      try {
+        const { pipeline, env } = await import('@xenova/transformers');
+        try {
+          // 強制的にWASMバックエンドを使用（Node/Electronでのネイティブ依存を回避）
+          if (env && env.backends && env.backends.onnx) {
+            env.backends.onnx = 'wasm';
+          }
+        } catch (_) { /* noop */ }
+        // 小型で高速な汎用埋め込みモデル
+        const pipe = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+        return pipe;
+      } catch (e) {
+        console.error('Failed to load transformers pipeline:', e);
+        // 失敗時は以降の呼び出しで検出できるようエラーを再スロー
+        embeddingsPermanentlyDisabled = true;
+        throw e;
+      }
+    })();
+  }
+  return embeddingPipelinePromise;
+}
+
+function l2norm(vec) {
+  const s = Math.sqrt(vec.reduce((a, v) => a + v * v, 0) || 1);
+  return vec.map(v => v / s);
+}
+
+function cosSim(a, b) {
+  let s = 0;
+  for (let i = 0; i < Math.min(a.length, b.length); i++) s += a[i] * b[i];
+  return s;
+}
+
+async function embedText(text) {
+  const pipe = await getEmbeddingPipeline();
+  const output = await pipe(text, { pooling: 'mean', normalize: true });
+  // output is TypedArray
+  return Array.from(output.data || output);
+}
+
+function readJson(file) {
+  try {
+    if (fs.existsSync(file)) {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    }
+  } catch (e) {
+    console.warn('Failed to read index json:', e.message);
+  }
+  return null;
+}
+
+function writeJson(file, data) {
+  try {
+    fs.writeFileSync(file, JSON.stringify(data), 'utf8');
+    return true;
+  } catch (e) {
+    console.warn('Failed to write index json:', e.message);
+    return false;
+  }
+}
+
+function listMarkdownFilesRecursive(dir, maxFiles = 2000) {
+  const result = [];
+  function walk(d) {
+    if (result.length >= maxFiles) return;
+    const entries = fs.readdirSync(d, { withFileTypes: true });
+    for (const ent of entries) {
+      const p = path.join(d, ent.name);
+      if (ent.isDirectory()) {
+        walk(p);
+      } else if (ent.isFile() && ent.name.toLowerCase().endsWith('.md')) {
+        result.push(p);
+        if (result.length >= maxFiles) break;
+      }
+    }
+  }
+  walk(dir);
+  return result;
+}
+
+function chunkMarkdownForIndex(content) {
+  // H2+で区切り、段落で細分化。コードブロックは1塊。
+  const lines = (content || '').split(/\r?\n/);
+  const chunks = [];
+  let currentHeading = '';
+  let buffer = [];
+  const flush = () => {
+    if (buffer.length === 0) return;
+    const text = buffer.join('\n').trim();
+    if (text) {
+      if (text.length <= 1200) {
+        chunks.push({ heading: currentHeading, text });
+      } else {
+        const parts = text.split(/\n\n+/);
+        let acc = '';
+        for (const p of parts) {
+          const candidate = acc ? acc + '\n\n' + p : p;
+          if (candidate.length > 800) {
+            if (acc.trim()) chunks.push({ heading: currentHeading, text: acc.trim() });
+            acc = p;
+          } else {
+            acc = candidate;
+          }
+        }
+        if (acc.trim()) chunks.push({ heading: currentHeading, text: acc.trim() });
+      }
+    }
+    buffer = [];
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^```/.test(line)) {
+      const code = [line];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) { code.push(lines[i]); i++; }
+      if (i < lines.length) code.push(lines[i]);
+      buffer.push(code.join('\n'));
+      continue;
+    }
+    const m = /^(#{2,6})\s+(.*)$/.exec(line);
+    if (m) { flush(); currentHeading = m[2].trim(); continue; }
+    buffer.push(line);
+  }
+  flush();
+  return chunks;
+}
+
+async function ensureKbIndex(directory, options = {}) {
+  const model = 'Xenova/all-MiniLM-L6-v2';
+  const indexFile = path.join(directory, '.ai_markdown_index.json');
+  let index = kbIndexCache.get(directory) || readJson(indexFile) || { model, chunks: [], files: {}, lastBuilt: 0 };
+
+  // ファイル一覧と更新検知
+  const files = listMarkdownFilesRecursive(directory, options.maxFiles || 2000);
+  const fileSet = new Set(files);
+  const toUpdate = [];
+
+  // 既存のものと照合
+  for (const filePath of files) {
+    try {
+      const st = fs.statSync(filePath);
+      const mtime = st.mtimeMs;
+      const rec = index.files[filePath];
+      if (!rec || rec.mtime !== mtime) {
+        toUpdate.push({ filePath, mtime });
+      }
+    } catch (_) {}
+  }
+  // 削除されたファイルを除去
+  if (index.files) {
+    for (const oldPath of Object.keys(index.files)) {
+      if (!fileSet.has(oldPath)) {
+        // 該当するチャンクを削除
+        index.chunks = index.chunks.filter(ch => ch.path !== oldPath);
+        delete index.files[oldPath];
+      }
+    }
+  }
+
+  if (toUpdate.length > 0) {
+    // モデルの初期化（必要時）。失敗したら以降は埋め込みをスキップ
+    try {
+      await getEmbeddingPipeline();
+    } catch (e) {
+      console.warn('Embedding pipeline unavailable, skipping index embedding updates');
+      kbIndexCache.set(directory, index);
+      writeJson(indexFile, index);
+      return { updated: 0, files: Object.keys(index.files).length, chunks: index.chunks.length };
+    }
+  }
+
+  for (const { filePath, mtime } of toUpdate) {
+    let content = '';
+    try { content = fs.readFileSync(filePath, 'utf8'); } catch (e) { continue; }
+    const firstLine = content.split('\n')[0] || '';
+    const title = firstLine.startsWith('# ') ? firstLine.substring(2).trim() : path.basename(filePath).replace(/\.md$/i, '');
+    const chunks = chunkMarkdownForIndex(content);
+
+    // 既存チャンクを一旦削除
+    index.chunks = index.chunks.filter(ch => ch.path !== filePath);
+
+    // 埋め込み計算
+    for (const ch of chunks) {
+      let embedding = [];
+      try {
+        embedding = await embedText(ch.text);
+      } catch (e) {
+        console.warn('Embedding failed for chunk:', filePath, e.message);
+        continue;
+      }
+      index.chunks.push({
+        path: filePath,
+        file: path.basename(filePath),
+        title,
+        heading: ch.heading,
+        text: ch.text,
+        embedding
+      });
+    }
+
+    index.files[filePath] = { mtime, chunks: chunks.length };
+  }
+
+  index.model = model;
+  index.lastBuilt = Date.now();
+  kbIndexCache.set(directory, index);
+
+  // 永続化（大きくなりすぎる場合は将来的に圧縮を検討）
+  writeJson(indexFile, index);
+  return { updated: toUpdate.length, files: Object.keys(index.files).length, chunks: index.chunks.length };
+}
+
+ipcMain.handle('kb-build-index', async (event, directory, options = {}) => {
+  try {
+    if (!directory || !fs.existsSync(directory)) throw new Error('Invalid directory');
+    const stats = await ensureKbIndex(directory, options);
+    return { ok: true, stats };
+  } catch (e) {
+    console.error('kb-build-index error:', e);
+    // 埋め込み失敗時もアプリは落とさない
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('kb-search-embeddings', async (event, directory, query, options = {}) => {
+  try {
+    if (!directory || !fs.existsSync(directory) || !query || !query.trim()) return [];
+    await ensureKbIndex(directory, { maxFiles: options.maxFiles || 2000 });
+    const index = kbIndexCache.get(directory);
+    if (!index || !index.chunks || index.chunks.length === 0) return [];
+
+    // クエリ埋め込み
+    const q = await embedText(query);
+
+    const scored = index.chunks.map(ch => ({
+      score: cosSim(q, ch.embedding),
+      file: ch.file,
+      path: ch.path,
+      title: ch.title,
+      heading: ch.heading,
+      text: ch.text
+    }));
+
+    scored.sort((a, b) => b.score - a.score);
+    const topK = Math.min(options.topK || 6, scored.length);
+    const maxChars = options.maxCharsPerPassage || 600;
+    return scored.slice(0, topK).map(p => ({
+      ...p,
+      text: p.text.length > maxChars ? p.text.slice(0, maxChars) + '...' : p.text
+    }));
+  } catch (e) {
+    console.error('kb-search-embeddings error:', e);
+    // 失敗時は空配列（レンダラー側でキーワード検索にフォールバック）
+    return [];
+  }
+});
+
 // RAG-lite: ローカルMarkdownから関連抜粋を検索
 // 単語頻度ベースの簡易スコアリングで、見出し/段落/コードブロックを塊に分割して上位を返す
 ipcMain.handle('kb-search-passages', async (event, directory, query, options = {}) => {
@@ -435,7 +713,7 @@ ipcMain.handle('kb-search-passages', async (event, directory, query, options = {
     }
 
     const {
-      maxFiles = 200,        // 走査する最大ファイル数
+      maxFiles = 2000,        // 走査する最大ファイル数（再帰に合わせて拡大）
       maxPassages = 6,       // 返す最大抜粋数
       maxCharsPerPassage = 600, // 抜粋の最大文字数
       includeFileMeta = true
@@ -452,14 +730,12 @@ ipcMain.handle('kb-search-passages', async (event, directory, query, options = {
     const queryTokens = tokenize(query);
     if (queryTokens.length === 0) return [];
 
-    const files = fs.readdirSync(directory)
-      .filter(f => f.endsWith('.md'))
-      .slice(0, maxFiles);
+    // 再帰的にMarkdownファイルを収集
+    const files = listMarkdownFilesRecursive(directory, maxFiles);
 
     const passages = [];
 
-    for (const file of files) {
-      const filePath = path.join(directory, file);
+    for (const filePath of files) {
       let content = '';
       try {
         content = fs.readFileSync(filePath, 'utf8');
@@ -470,7 +746,7 @@ ipcMain.handle('kb-search-passages', async (event, directory, query, options = {
 
       // タイトル抽出（先頭行 # タイトル）
       const firstLine = content.split('\n')[0] || '';
-      const title = firstLine.startsWith('# ') ? firstLine.substring(2).trim() : file.replace(/\.md$/, '');
+      const title = firstLine.startsWith('# ') ? firstLine.substring(2).trim() : path.basename(filePath).replace(/\.md$/, '');
 
       // チャンク分割: 見出し(H2以降)を基点に、大きすぎる場合は段落単位に
       const chunks = splitMarkdownIntoChunks(content);
@@ -497,7 +773,7 @@ ipcMain.handle('kb-search-passages', async (event, directory, query, options = {
 
           passages.push({
             score,
-            file: includeFileMeta ? file : undefined,
+            file: includeFileMeta ? path.basename(filePath) : undefined,
             path: includeFileMeta ? filePath : undefined,
             title: includeFileMeta ? title : undefined,
             heading: ch.heading,
