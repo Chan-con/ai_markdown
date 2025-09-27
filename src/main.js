@@ -33,6 +33,7 @@ function createWindow() {
     frame: false,
     webPreferences: {
       nodeIntegration: true,
+      // TODO: preload経由に移行後にtrueへ。現状はrendererでrequireを使用しているためfalseのまま。
       contextIsolation: false
     },
     icon: path.join(__dirname, '../assets/app-icon.png')
