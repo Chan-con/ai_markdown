@@ -1161,19 +1161,19 @@ ${this.originalContent}`;
                 return;
             }
             
-            // AI回答を履歴に追加（段階とWeb検索情報を含む）
+            // AI回答を履歴に追加（段階と検索情報を含む）
             let responseMessage = result.response;
             const instructionLevel = result.instructionLevel || this.getInstructionLevel(instruction);
             
             // 段階に応じたプレフィックスを追加
             const levelPrefix = instructionLevel === 1 ? '💭' : 
                                instructionLevel === 2 ? '💡' : '✏️';
-            
-            if (result.needsWebSearch) {
-                responseMessage = `🔍${levelPrefix} ${responseMessage}`;
-            } else {
-                responseMessage = `${levelPrefix} ${responseMessage}`;
-            }
+
+            // 検索モードのアイコンを先頭に付ける（Web:🔍 / Local RAG:📚）
+            let searchPrefix = '';
+            if (result.needsWebSearch) searchPrefix += '🔍';
+            if (result.needsLocalRag) searchPrefix += '📚';
+            responseMessage = `${searchPrefix}${levelPrefix} ${responseMessage}`;
             this.addConversationMessage('ai', responseMessage);
             
             // 編集結果があれば直接適用（Undoで元に戻せるので安全）
@@ -2216,13 +2216,20 @@ ${instruction}`;
         const indicator = document.getElementById('rag-search-indicator');
         if (indicator) {
             indicator.style.display = 'flex';
+            // フリッカー防止のため、最小表示時間を確保
+            this._ragIndicatorShownAt = Date.now();
         }
     }
 
     hideRagSearchIndicator() {
         const indicator = document.getElementById('rag-search-indicator');
         if (indicator) {
-            indicator.style.display = 'none';
+            const minVisibleMs = 600;
+            const elapsed = this._ragIndicatorShownAt ? (Date.now() - this._ragIndicatorShownAt) : minVisibleMs;
+            const delay = Math.max(0, minVisibleMs - elapsed);
+            setTimeout(() => {
+                indicator.style.display = 'none';
+            }, delay);
         }
     }
     
