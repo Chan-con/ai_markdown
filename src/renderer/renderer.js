@@ -1307,6 +1307,22 @@ ${instructionLevel === 1 ? '→ 相談・アドバイスモード：質問に対
   instructionLevel === 2 ? '→ 確認付き提案モード：具体的な編集案を提示し確認を求める' : 
   '→ 即座実行モード：指示通りに編集を実行'}`;
 
+    systemPrompt += `
+
+🚨 エラー処理ルール：
+- 指示どおりに安全かつ正確な編集ができない場合は、必ず次のフォーマットで失敗理由を返してください。
+[[AI_ERROR]]
+code: <snake_caseで短く分類したコード（例: missing_selection, insufficient_context, forbidden_change）>
+reason: <ユーザーに伝えるべき失敗理由。日本語で簡潔に記述する>
+fix_suggestions:
+- <ユーザーが再試行するために取るべき具体的な改善策>
+- <必要に応じて複数の手順を列挙>
+[[AI_ERROR_END]]
+
+- 上記ブロック以外の形式でエラー理由を返さないでください。
+- エラーブロックを返す場合は通常の編集結果や会話文を混在させないでください。
+- 問題が解消された場合は通常どおり編集結果だけを返してください。`;
+
         if (isAppendInstruction) {
             systemPrompt += `
 
@@ -1520,7 +1536,51 @@ ${instruction}`;
         
         // 内部指示の漏れを除去
         aiResponse = this.cleanInternalInstructions(aiResponse);
-        
+
+        const trimmedResponse = (aiResponse ?? '').trim();
+        const aiError = this.parseAiErrorResponse(trimmedResponse);
+
+        if (aiError) {
+            const guidance = this.buildAiErrorGuidance(aiError, {
+                instructionLevel,
+                isSelection
+            });
+            this.showErrorMessage(aiError.toastMessage || 'AI編集エラーが発生しました。指示を確認してください。');
+            return {
+                response: guidance,
+                editedContent: null,
+                editType: isSelection ? 'selection' : 'full',
+                instructionLevel,
+                needsWebSearch,
+                needsLocalRag
+            };
+        }
+
+        aiResponse = this.stripAiErrorMarkers(trimmedResponse).trim();
+
+        if (!aiResponse) {
+            const explanation = `AIから編集結果を受け取れませんでした。
+
+考えられる原因:
+- 指示が曖昧または矛盾している
+- 編集対象のテキストが不足している
+- ネットワークやAPIの応答が一時的に不安定
+
+対処案:
+- 編集してほしい箇所を選択するか、編集範囲を明示してください
+- 指示文を短く具体的に書き直してください
+- 数秒待ってから再度「送信」してください。`;
+            this.showErrorMessage('AIから編集内容を受け取れませんでした。指示を見直して再試行してください。');
+            return {
+                response: explanation,
+                editedContent: null,
+                editType: isSelection ? 'selection' : 'full',
+                instructionLevel,
+                needsWebSearch,
+                needsLocalRag
+            };
+        }
+
         // 編集結果かどうかを判定（第3段階の場合のみ自動適用）
         const isEditResponse = (instructionLevel === 3) || isAppendInstruction;
         
@@ -1698,6 +1758,100 @@ ${instruction}`;
         return appendKeywords.some(keyword => 
             instruction.toLowerCase().includes(keyword.toLowerCase())
         );
+    }
+
+    stripAiErrorMarkers(text) {
+        if (!text) return '';
+        return text.replace(/\[\[AI_ERROR\]\][\s\S]*?\[\[AI_ERROR_END\]\]/g, '').trim();
+    }
+
+    parseAiErrorResponse(text) {
+        if (!text) return null;
+
+        const startMarker = '[[AI_ERROR]]';
+        const endMarker = '[[AI_ERROR_END]]';
+        const startIndex = text.indexOf(startMarker);
+        const endIndex = text.indexOf(endMarker);
+
+        if (startIndex === -1 || endIndex === -1 || endIndex <= startIndex) {
+            return null;
+        }
+
+        const block = text.slice(startIndex + startMarker.length, endIndex).trim();
+        const cleanedResponse = this.stripAiErrorMarkers(text);
+
+        const lines = block.split('\n').map(line => line.trim()).filter(Boolean);
+        let code = null;
+        let reason = null;
+        const suggestions = [];
+        let collectingSuggestions = false;
+
+        lines.forEach(line => {
+            if (!collectingSuggestions && /^code\s*:/i.test(line)) {
+                code = line.split(':').slice(1).join(':').trim() || null;
+                return;
+            }
+            if (!collectingSuggestions && /^reason\s*:/i.test(line)) {
+                reason = line.split(':').slice(1).join(':').trim() || null;
+                return;
+            }
+            if (/^fix_suggestions\s*:/i.test(line)) {
+                collectingSuggestions = true;
+                const afterColon = line.split(':').slice(1).join(':').trim();
+                if (afterColon) {
+                    const sanitized = afterColon.replace(/^-\s*/, '').trim();
+                    if (sanitized) suggestions.push(sanitized);
+                }
+                return;
+            }
+            if (collectingSuggestions) {
+                const sanitized = line.replace(/^-\s*/, '').trim();
+                if (sanitized) suggestions.push(sanitized);
+            }
+        });
+
+        const toastMessage = reason ? `AI編集エラー: ${reason}` : 'AI編集エラーが発生しました。';
+
+        return {
+            code,
+            reason,
+            suggestions,
+            toastMessage,
+            cleanedResponse
+        };
+    }
+
+    buildAiErrorGuidance(errorInfo, context = {}) {
+        const { isSelection } = context;
+        const suggestions = Array.isArray(errorInfo.suggestions) ? [...errorInfo.suggestions] : [];
+
+        if (isSelection && !suggestions.some(s => s.includes('選択'))) {
+            suggestions.push('編集対象のテキストを選択した状態で再実行してください。');
+        }
+
+        if (!suggestions.length) {
+            suggestions.push('指示文をより具体的に書き直し、必要な文脈や目的を明記してください。');
+        }
+
+        const lines = ['AIによる自動編集を完了できませんでした。'];
+
+        if (errorInfo.reason) {
+            lines.push('', `理由: ${errorInfo.reason}`);
+        }
+
+        if (errorInfo.code) {
+            lines.push('', `エラーコード: ${errorInfo.code}`);
+        }
+
+        lines.push('', '次に試すこと:');
+
+        suggestions.forEach(item => {
+            lines.push(`- ${item}`);
+        });
+
+        lines.push('', '修正後に再度「送信」してください。');
+
+        return lines.join('\n');
     }
     
     cleanInternalInstructions(text) {
