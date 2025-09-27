@@ -104,13 +104,14 @@ class MarkdownEditor {
         // Slide menu elements
         this.slideMenu = document.getElementById('slide-menu');
         this.overlay = document.getElementById('overlay');
-        this.closeMenuBtn = document.getElementById('close-menu-btn');
+    // close-menu-btn はUIから削除。存在しない前提で進める。
+    this.closeMenuBtn = null;
         this.newArticleLoading = document.getElementById('new-article-loading');
         
         console.log('Slide menu elements initialized:');
         console.log('slideMenu:', this.slideMenu);
         console.log('overlay:', this.overlay);
-        console.log('closeMenuBtn:', this.closeMenuBtn);
+    // console.log('closeMenuBtn:', this.closeMenuBtn);
         console.log('newArticleLoading:', this.newArticleLoading);
         
         // Edit history elements (moved to editor tab area)
@@ -166,9 +167,7 @@ class MarkdownEditor {
         this.deleteConfirmBtn = document.getElementById('delete-confirm-btn');
         this.currentDeletePath = null;
         
-        // Debug: Check if close menu button exists
-        console.log('Close menu button found:', this.closeMenuBtn);
-        console.log('Close menu button element:', document.getElementById('close-menu-btn'));
+    // Debug: close menu button was removed from UI
         
         // 編集履歴管理用
         this.editHistory = [];
@@ -1797,18 +1796,7 @@ ${instruction}`;
         }
         
         // メニューを閉じるボタンのクリック - より確実な実装
-        const closeMenuBtn = document.getElementById('close-menu-btn');
-        if (closeMenuBtn) {
-            console.log('Adding click event listener to close menu button');
-            closeMenuBtn.addEventListener('click', (e) => {
-                console.log('Close menu button clicked');
-                e.preventDefault();
-                e.stopPropagation();
-                this.closeSlideMenu();
-            });
-        } else {
-            console.error('closeMenuBtn not found!');
-        }
+        // 閉じるボタンは撤去済みのため、イベント登録は行わない
         
         // オーバーレイのクリック
         if (this.overlay) {
