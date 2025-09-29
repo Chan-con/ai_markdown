@@ -7,6 +7,8 @@ class MarkdownEditor {
         this.currentFile = null;
         this.unsavedChanges = false;
         this.apiKey = null;
+    // Organization ID は UI から削除（将来の互換のため変数は保持可能）
+    this.orgId = null;
         this.defaultDirectory = null;
         this.imageDirectory = null;
         this.sidebarOpen = false;
@@ -128,6 +130,8 @@ class MarkdownEditor {
         this.editInstruction = document.getElementById('edit-instruction');
         this.imagePrompt = document.getElementById('image-prompt');
         this.apiKeyInput = document.getElementById('openai-api-key');
+    // Org ID 入力欄は削除済み
+    this.orgIdInput = null;
         this.generatedContent = document.getElementById('generated-content');
         this.editResult = document.getElementById('edit-result');
         this.generatedImage = document.getElementById('generated-image');
@@ -2609,6 +2613,7 @@ ${instruction}`;
 
     showSettingsModal() {
         this.apiKeyInput.value = this.apiKey || '';
+    // Org ID 入力欄は無し
         this.defaultDirectoryInput.value = this.defaultDirectory || '';
         this.imageDirectoryInput.value = this.imageDirectory || '';
         this.settingsModal.style.display = 'block';
@@ -2634,7 +2639,8 @@ ${instruction}`;
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${this.apiKey}`
+                    'Authorization': `Bearer ${this.apiKey}`,
+                    ...(this.orgId ? { 'OpenAI-Organization': this.orgId } : {})
                 },
                 body: JSON.stringify({
                     model: 'gpt-5',
@@ -2648,14 +2654,18 @@ ${instruction}`;
                             content: prompt
                         }
                     ],
-                    max_completion_tokens: 1000
+                    max_tokens: 1000
                 })
             });
 
+            if (!response.ok) {
+                const text = await response.text().catch(() => '');
+                throw new Error(`Chat API error ${response.status} ${response.statusText}: ${text?.slice(0, 300)}`);
+            }
+
             const data = await response.json();
-            
-            if (data.error) {
-                throw new Error(data.error.message);
+            if (data?.error) {
+                throw new Error(data.error.message || 'Unknown error from Chat API');
             }
 
             const content = data.choices[0].message.content;
@@ -2686,38 +2696,64 @@ ${instruction}`;
         }
 
         try {
+            // gpt-image-1 を使用し、b64_json で受け取る（正しいエンドポイントに修正）
             const response = await fetch('https://api.openai.com/v1/images/generations', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${this.apiKey}`
+                    'Authorization': `Bearer ${this.apiKey}`,
+                    ...(this.orgId ? { 'OpenAI-Organization': this.orgId } : {})
                 },
                 body: JSON.stringify({
-                    model: 'dall-e-3',
+                    model: 'gpt-image-1',
                     prompt: prompt,
-                    n: 1,
-                    size: '1792x1024'
+                    size: '1024x1024'
                 })
             });
 
-            const data = await response.json();
-            
-            if (data.error) {
-                throw new Error(data.error.message);
+            // ステータスがエラーの場合は本文をテキストで取得して詳細を表示
+            if (!response.ok) {
+                const text = await response.text().catch(() => '');
+                throw new Error(`Images API error ${response.status} ${response.statusText}: ${text?.slice(0, 300)}`);
             }
 
-            const imageUrl = data.data[0].url;
-            
-            // 生成された画像情報を保持
-            this.currentGeneratedImage = {
-                url: imageUrl,
-                prompt: prompt,
-                timestamp: new Date().toISOString().replace(/[:.]/g, '-')
-            };
-            
-            this.generatedImage.innerHTML = `<img src="${imageUrl}" alt="Generated image">`;
-            if (this.imageActions) {
-                this.imageActions.style.display = 'flex';
+            const data = await response.json();
+            if (data?.error) {
+                throw new Error(data.error.message || 'Unknown error from Images API');
+            }
+
+            const item = data?.data?.[0] || {};
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+            const b64 = item.b64_json;
+            const imageUrl = item.url;
+
+            if (b64) {
+                // b64 をそのまま表示
+                this.currentGeneratedImage = { b64, prompt, timestamp };
+                this.generatedImage.innerHTML = `<img src="data:image/png;base64,${b64}" alt="Generated image">`;
+                if (this.imageActions) this.imageActions.style.display = 'flex';
+            } else if (imageUrl) {
+                // URL が返る場合はフェッチして data URL に変換（CSP対策）
+                try {
+                    const imgRes = await fetch(imageUrl);
+                    if (!imgRes.ok) throw new Error(`Image download failed: ${imgRes.status} ${imgRes.statusText}`);
+                    const blob = await imgRes.blob();
+                    const dataUrl = await new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = () => resolve(reader.result);
+                        reader.onerror = reject;
+                        reader.readAsDataURL(blob);
+                    });
+                    const b64fromUrl = String(dataUrl).split(',')[1];
+                    this.currentGeneratedImage = { b64: b64fromUrl, prompt, timestamp };
+                    this.generatedImage.innerHTML = `<img src="${dataUrl}" alt="Generated image">`;
+                    if (this.imageActions) this.imageActions.style.display = 'flex';
+                } catch (e) {
+                    throw new Error('画像の取得に失敗しました: ' + (e?.message || e));
+                }
+            } else {
+                throw new Error('画像データがレスポンスに含まれていません');
             }
             
         } catch (error) {
@@ -2745,44 +2781,33 @@ ${instruction}`;
             this.showErrorMessage('保存する画像がありません');
             return;
         }
-        
+
         if (!this.imageDirectory) {
             this.showErrorMessage('画像保存ディレクトリが設定されていません。設定からディレクトリを選択してください。');
             return;
         }
-        
+
         try {
             this.showLoading('画像を保存中...');
-            
-            const response = await fetch(this.currentGeneratedImage.url);
-            const blob = await response.blob();
-            const reader = new FileReader();
-            
-            reader.onload = async () => {
-                try {
-                    const base64Data = reader.result.split(',')[1];
-                    const filename = `ai-image-${this.currentGeneratedImage.timestamp}.png`;
-                    
-                    const savedPath = await ipcRenderer.invoke('save-image', base64Data, filename, this.imageDirectory, this.currentGeneratedImage.prompt);
-                    
-                    if (savedPath) {
-                        this.showSuccessMessage('画像を保存しました');
-                    } else {
-                        this.showErrorMessage('画像の保存に失敗しました');
-                    }
-                } catch (error) {
-                    console.error('Error in save process:', error);
-                    this.showErrorMessage('画像の保存エラー: ' + error.message);
-                } finally {
-                    this.hideLoading();
-                }
-            };
-            
-            reader.readAsDataURL(blob);
+
+            const base64Data = this.currentGeneratedImage.b64;
+            if (!base64Data) {
+                throw new Error('画像データが見つかりません (b64)');
+            }
+
+            const filename = `ai-image-${this.currentGeneratedImage.timestamp}.png`;
+            const savedPath = await ipcRenderer.invoke('save-image', base64Data, filename, this.imageDirectory, this.currentGeneratedImage.prompt);
+
+            if (savedPath) {
+                this.showSuccessMessage('画像を保存しました');
+            } else {
+                this.showErrorMessage('画像の保存に失敗しました');
+            }
         } catch (error) {
-            this.hideLoading();
             console.error('Error saving generated image:', error);
-            this.showErrorMessage('画像のダウンロードに失敗しました: ' + error.message);
+            this.showErrorMessage('画像の保存エラー: ' + error.message);
+        } finally {
+            this.hideLoading();
         }
     }
     
@@ -2805,11 +2830,13 @@ ${instruction}`;
     async saveSettings() {
         try {
             this.apiKey = this.apiKeyInput.value.trim();
+            // Org ID はUIから入力しない（既存保存があれば保持）
             this.defaultDirectory = this.defaultDirectoryInput.value.trim();
             this.imageDirectory = this.imageDirectoryInput.value.trim();
             
             // 設定を保存
             await ipcRenderer.invoke('set-store', 'openai-api-key', this.apiKey);
+            // Org ID は保存しない（任意のため）
             await ipcRenderer.invoke('set-store', 'defaultSaveDirectory', this.defaultDirectory);
             await ipcRenderer.invoke('set-store', 'imageDirectory', this.imageDirectory);
             
@@ -2830,6 +2857,10 @@ ${instruction}`;
         console.log('[loadSettings] Loading settings...');
         try {
             this.apiKey = await ipcRenderer.invoke('get-store', 'openai-api-key');
+            // 互換のため既存保存があれば読み込む（存在しない場合は無視）
+            try {
+                this.orgId = await ipcRenderer.invoke('get-store', 'openai-org-id');
+            } catch (_) {}
             this.defaultDirectory = await ipcRenderer.invoke('get-store', 'defaultSaveDirectory');
             this.imageDirectory = await ipcRenderer.invoke('get-store', 'imageDirectory');
             
