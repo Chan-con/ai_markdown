@@ -241,16 +241,7 @@ class MarkdownEditor {
 
         // AIパネルの表示/非表示トグル
         if (this.toggleAiPanelBtn) {
-            this.toggleAiPanelBtn.addEventListener('click', async () => {
-                try {
-                    const next = !this.aiPanelVisible;
-                    this.applyAiPanelVisibility(next);
-                    this.aiPanelVisible = next;
-                    await ipcRenderer.invoke('set-store', 'aiPanelVisible', next);
-                } catch (e) {
-                    console.error('Failed to toggle AI panel visibility:', e);
-                }
-            });
+            this.toggleAiPanelBtn.addEventListener('click', () => this.toggleAiPanel());
         }
         
         // AI Assistant Panel events
@@ -323,10 +314,12 @@ class MarkdownEditor {
             if (e.ctrlKey || e.metaKey) {
                 if (e.key === '1') {
                     e.preventDefault();
-                    this.switchTab('editor');
+                    // Ctrl+1: エディタ/プレビューをトグル
+                    this.toggleTab();
                 } else if (e.key === '2') {
                     e.preventDefault();
-                    this.switchTab('preview');
+                    // Ctrl+2: AIアシスタントパネルをトグル
+                    this.toggleAiPanel();
                 } else if (e.key === 'z' && !e.shiftKey) {
                     e.preventDefault();
                     this.undo();
@@ -2914,6 +2907,17 @@ ${instruction}`;
             this.aiAssistantPanel.classList.remove('hidden');
         } else {
             this.aiAssistantPanel.classList.add('hidden');
+        }
+    }
+
+    async toggleAiPanel() {
+        try {
+            const next = !this.aiPanelVisible;
+            this.applyAiPanelVisibility(next);
+            this.aiPanelVisible = next;
+            await ipcRenderer.invoke('set-store', 'aiPanelVisible', next);
+        } catch (e) {
+            console.error('Failed to toggle AI panel visibility:', e);
         }
     }
     
