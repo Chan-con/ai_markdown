@@ -73,8 +73,9 @@ class MarkdownEditor {
             console.log(`✓ ${prop} (${id}) found`);
         }
         
-        // Optional elements  
-        this.aiImageBtn = document.getElementById('ai-image-btn');
+    // Optional elements  
+    this.aiImageBtn = document.getElementById('ai-image-btn');
+    this.toggleAiPanelBtn = document.getElementById('toggle-ai-panel-btn');
         
         // Tab system elements
         this.tabToggleBtn = document.getElementById('tab-toggle-btn');
@@ -236,6 +237,20 @@ class MarkdownEditor {
         if (this.conversationHistory) {
             this.conversationHistory.addEventListener('mouseup', () => this.handleConversationSelection());
             this.conversationHistory.addEventListener('keyup', () => this.handleConversationSelection());
+        }
+
+        // AIパネルの表示/非表示トグル
+        if (this.toggleAiPanelBtn) {
+            this.toggleAiPanelBtn.addEventListener('click', async () => {
+                try {
+                    const next = !this.aiPanelVisible;
+                    this.applyAiPanelVisibility(next);
+                    this.aiPanelVisible = next;
+                    await ipcRenderer.invoke('set-store', 'aiPanelVisible', next);
+                } catch (e) {
+                    console.error('Failed to toggle AI panel visibility:', e);
+                }
+            });
         }
         
         // AI Assistant Panel events
@@ -2863,6 +2878,14 @@ ${instruction}`;
             } catch (_) {}
             this.defaultDirectory = await ipcRenderer.invoke('get-store', 'defaultSaveDirectory');
             this.imageDirectory = await ipcRenderer.invoke('get-store', 'imageDirectory');
+            // AIパネル表示状態（既定: 表示）
+            try {
+                const visible = await ipcRenderer.invoke('get-store', 'aiPanelVisible');
+                this.aiPanelVisible = (visible === undefined || visible === null) ? true : !!visible;
+            } catch (_) {
+                this.aiPanelVisible = true;
+            }
+            this.applyAiPanelVisibility(this.aiPanelVisible);
             
             console.log('[loadSettings] Settings loaded:');
             console.log('  API Key:', this.apiKey ? '[SET]' : '[NOT SET]');
@@ -2882,6 +2905,15 @@ ${instruction}`;
             }
         } catch (error) {
             console.error('[loadSettings] Error loading settings:', error);
+        }
+    }
+
+    applyAiPanelVisibility(visible) {
+        if (!this.aiAssistantPanel) return;
+        if (visible) {
+            this.aiAssistantPanel.classList.remove('hidden');
+        } else {
+            this.aiAssistantPanel.classList.add('hidden');
         }
     }
     

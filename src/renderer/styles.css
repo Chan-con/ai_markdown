@@ -405,6 +405,11 @@ body {
     flex-direction: column;
 }
 
+/* Hidden state for AI panel */
+.ai-assistant-panel.hidden {
+    display: none;
+}
+
 /* リサイズハンドル */
 .resize-handle {
     position: absolute;
